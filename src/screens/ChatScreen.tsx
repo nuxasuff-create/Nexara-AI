@@ -23,6 +23,60 @@ import { exportAsMarkdown } from '../lib/fileExporter';
 import { ArtifactProject, DrawerState } from '../types/artifact';
 import { useSmoothStream } from '../hooks/useSmoothStream';
 
+export function parseFrontendError(err: any): string {
+  if (!err) return "An unknown error occurred.";
+  
+  let msg = "";
+  if (typeof err === "string") {
+    const trimmed = err.trim();
+    if (trimmed === "[object Object]") return "An unexpected error occurred.";
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return parseFrontendError(parsed);
+      } catch {
+        msg = trimmed;
+      }
+    } else {
+      msg = trimmed;
+    }
+  } else if (typeof err === "object") {
+    if (err.error) {
+      return parseFrontendError(err.error);
+    }
+    if (typeof err.message === "string" && err.message && err.message !== "[object Object]") {
+      msg = err.message;
+    } else if (typeof err.message === "object" && err.message) {
+      return parseFrontendError(err.message);
+    } else if (typeof err.detail === "string") {
+      msg = err.detail;
+    } else if (typeof err.msg === "string") {
+      msg = err.msg;
+    } else {
+      try {
+        const jsonStr = JSON.stringify(err);
+        if (jsonStr && jsonStr !== "{}" && jsonStr !== "[object Object]") {
+          msg = jsonStr;
+        }
+      } catch {
+        // Fall through
+      }
+    }
+  }
+
+  if (!msg) {
+    const str = String(err);
+    msg = str !== "[object Object]" ? str : "An unexpected error occurred.";
+  }
+
+  const lower = msg.toLowerCase();
+  if (lower.includes("free-models-per-day") || (lower.includes("429") && lower.includes("rate limit"))) {
+    return "The default OpenRouter daily free quota has been reached. Please add your own OpenRouter API Key in Settings (⚙️) to continue seamlessly.";
+  }
+
+  return msg;
+}
+
 interface Message {
   id: string;
   text: string;
@@ -234,6 +288,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageName, setSelectedImageName] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
+  const [isSpeechSupported, setIsSpeechSupported] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [statusTool, setStatusTool] = useState<string>('');
@@ -408,102 +463,113 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     };
   });
 
-  // Initialize Speech Recognition
+  // Initialize Speech Recognition (Web Speech API)
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false; // False is more reliable on mobile
-      recognition.interimResults = true;
-      
-      const langMap: Record<string, string> = {
-        en: 'en-US', bn: 'bn-BD', zh: 'zh-CN', hi: 'hi-IN', es: 'es-ES', fr: 'fr-FR'
-      };
-      recognition.lang = langMap[language] || 'en-US';
-
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event: any) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
-          }
-        }
-        
-        if (finalTranscript) {
-          const transcriptText = finalTranscript.trim();
-          
-          setVoiceCommands(prev => {
-            // Keep unique voice inputs
-            const newHistory = [transcriptText, ...prev.filter(t => t.toLowerCase() !== transcriptText.toLowerCase())].slice(0, 10);
-            return newHistory;
-          });
-
-          const lowerTranscript = transcriptText.toLowerCase();
-          
-          // Voice Commands
-          if (lowerTranscript === 'send message' || lowerTranscript === 'send' || lowerTranscript === 'মেসেজ পাঠান' || lowerTranscript === 'পাঠান') {
-            latestPropsRef.current.handleSend(baseInputRef.current);
-            return;
-          } else if (lowerTranscript === 'start new chat' || lowerTranscript === 'new chat' || lowerTranscript === 'নতুন চ্যাট' || lowerTranscript === 'নতুন চ্যাট শুরু করুন') {
-            latestPropsRef.current.setCurrentChatId(null);
-            setInput('');
-            baseInputRef.current = '';
-            return;
-          } else if (lowerTranscript === 'go to settings' || lowerTranscript === 'open settings' || lowerTranscript === 'সেটিংসে যান' || lowerTranscript === 'সেটিংস খুলুন') {
-            latestPropsRef.current.setCurrentScreen('settings');
-            return;
-          } else if (lowerTranscript === 'go to dashboard' || lowerTranscript === 'open dashboard' || lowerTranscript === 'ড্যাশবোর্ডে যান' || lowerTranscript === 'ড্যাশবোর্ড খুলুন') {
-            latestPropsRef.current.setCurrentScreen('dashboard');
-            return;
-          } else if (lowerTranscript === 'stop reading' || lowerTranscript === 'stop playback' || lowerTranscript === 'পড়া বন্ধ করুন' || lowerTranscript === 'থামুন') {
-            window.speechSynthesis.cancel();
-            if (currentSourceRef.current) {
-              currentSourceRef.current.stop();
-              currentSourceRef.current.disconnect();
-              currentSourceRef.current = null;
-            }
-            setIsSpeaking(null);
-            return;
-          }
-
-          baseInputRef.current = (baseInputRef.current + ' ' + finalTranscript).trim();
-          setInput(baseInputRef.current);
-        } else if (interimTranscript) {
-          setInput((baseInputRef.current + ' ' + interimTranscript).trim());
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.error("Speech recognition error", event.error);
-        if (event.error === 'not-allowed') {
-          alert("Microphone access was denied. Please allow microphone permissions in your browser settings.");
-          setIsListening(false);
-        } else if (event.error !== 'no-speech') {
-          setIsListening(false);
-        }
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-      
-      recognitionRef.current = recognition;
+    const SpeechRecognition = typeof window !== 'undefined' && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    if (!SpeechRecognition) {
+      setIsSpeechSupported(false);
+      return;
     }
+    
+    setIsSpeechSupported(true);
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false; // continuous false is most reliable across desktop and mobile
+    recognition.interimResults = true;
+    
+    const langMap: Record<string, string> = {
+      en: 'en-US', bn: 'bn-BD', zh: 'zh-CN', hi: 'hi-IN', es: 'es-ES', fr: 'fr-FR'
+    };
+    
+    // Support English and Bengali dynamically based on app language or browser settings
+    const browserLang = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    const activeLang = langMap[language] || (browserLang.startsWith('bn') ? 'bn-BD' : 'en-US');
+    recognition.lang = activeLang;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event: any) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      
+      if (finalTranscript) {
+        const transcriptText = finalTranscript.trim();
+        
+        setVoiceCommands(prev => {
+          const newHistory = [transcriptText, ...prev.filter(t => t.toLowerCase() !== transcriptText.toLowerCase())].slice(0, 10);
+          return newHistory;
+        });
+
+        const lowerTranscript = transcriptText.toLowerCase();
+        
+        // Voice Commands
+        if (lowerTranscript === 'send message' || lowerTranscript === 'send' || lowerTranscript === 'মেসেজ পাঠান' || lowerTranscript === 'পাঠান') {
+          latestPropsRef.current.handleSend(baseInputRef.current);
+          return;
+        } else if (lowerTranscript === 'start new chat' || lowerTranscript === 'new chat' || lowerTranscript === 'নতুন চ্যাট' || lowerTranscript === 'নতুন চ্যাট শুরু করুন') {
+          latestPropsRef.current.setCurrentChatId(null);
+          setInput('');
+          baseInputRef.current = '';
+          return;
+        } else if (lowerTranscript === 'go to settings' || lowerTranscript === 'open settings' || lowerTranscript === 'সেটিংসে যান' || lowerTranscript === 'সেটিংস খুলুন') {
+          latestPropsRef.current.setCurrentScreen('settings');
+          return;
+        } else if (lowerTranscript === 'go to dashboard' || lowerTranscript === 'open dashboard' || lowerTranscript === 'ড্যাশবোর্ডে যান' || lowerTranscript === 'ড্যাশবোর্ড খুলুন') {
+          latestPropsRef.current.setCurrentScreen('dashboard');
+          return;
+        } else if (lowerTranscript === 'stop reading' || lowerTranscript === 'stop playback' || lowerTranscript === 'পড়া বন্ধ করুন' || lowerTranscript === 'থামুন') {
+          window.speechSynthesis.cancel();
+          if (currentSourceRef.current) {
+            currentSourceRef.current.stop();
+            currentSourceRef.current.disconnect();
+            currentSourceRef.current = null;
+          }
+          setIsSpeaking(null);
+          return;
+        }
+
+        baseInputRef.current = (baseInputRef.current + ' ' + finalTranscript).trim();
+        setInput(baseInputRef.current);
+      } else if (interimTranscript) {
+        setInput((baseInputRef.current + ' ' + interimTranscript).trim());
+      }
+
+      // Auto-resize textarea live as user speaks
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 200)}px`;
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.warn("Speech recognition error:", event.error);
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        alert(language === 'bn' ? "মাইক্রোফোন অ্যাক্সেস বন্ধ রয়েছে। ব্রাউজার সেটিংসে গিয়ে মাইক্রোফোন পারমিশন এলাউ করুন।" : "Microphone access was denied. Please allow microphone permissions in your browser settings.");
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+    
+    recognitionRef.current = recognition;
 
     return () => {
       if (recognitionRef.current) {
         try {
-          recognitionRef.current.stop();
+          recognitionRef.current.abort();
         } catch (e) {
-          // Ignore stop errors
+          // Ignore abort errors
         }
       }
       if (currentSourceRef.current) {
@@ -522,6 +588,11 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
   }, [language]);
 
   const toggleListening = () => {
+    if (!isSpeechSupported) {
+      alert(language === 'bn' ? "আপনার ব্রাউজারে স্পিচ রিকগনিশন সমর্থিত নয়। অনুগ্রহ করে গুগল ক্রোম ব্যবহার করুন।" : "Speech recognition is not supported in this browser. Please try using Google Chrome or another modern browser.");
+      return;
+    }
+
     if (isListening) {
       try {
         recognitionRef.current?.stop();
@@ -530,23 +601,24 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     } else {
       if (recognitionRef.current) {
         try {
-          setIsListening(true); // Immediate UI feedback
+          setIsListening(true);
           baseInputRef.current = input;
           recognitionRef.current.start();
         } catch (e) {
-          console.error("Could not start speech recognition:", e);
-          // If it throws an error, it might already be started, so we try to stop and restart
+          console.warn("Could not start speech recognition:", e);
           try {
             recognitionRef.current.stop();
             setTimeout(() => {
-              try { recognitionRef.current.start(); } catch(err) { setIsListening(false); }
+              try { 
+                recognitionRef.current.start(); 
+              } catch(err) { 
+                setIsListening(false); 
+              }
             }, 100);
           } catch(err) {
             setIsListening(false);
           }
         }
-      } else {
-        alert("Speech recognition is not supported in your browser. Please try using Google Chrome.");
       }
     }
   };
@@ -766,7 +838,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error || `Failed to fetch summary (Status: ${response.status})`);
+          throw new Error(parseFrontendError(errorData) || `Failed to fetch summary (Status: ${response.status})`);
         } else {
           const textError = await response.text().catch(() => "");
           console.error("Non-JSON Error Response:", textError);
@@ -785,7 +857,8 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
       setShowSummaryModal(true);
     } catch (error: any) {
       console.error("Error summarizing chat:", error);
-      alert(error.message || (language === 'bn' ? "সারসংক্ষেপ তৈরি করতে সমস্যা হয়েছে।" : "Failed to summarize chat. Please try again."));
+      const errMsg = parseFrontendError(error);
+      alert(errMsg || (language === 'bn' ? "সারসংক্ষেপ তৈরি করতে সমস্যা হয়েছে।" : "Failed to summarize chat. Please try again."));
     } finally {
       setIsSummarizing(false);
     }
@@ -981,7 +1054,8 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error || `Failed to fetch AI response (Status: ${response.status})`);
+          const cleanMsg = parseFrontendError(errorData) || `Failed to fetch AI response (Status: ${response.status})`;
+          throw new Error(cleanMsg);
         } else {
           const textError = await response.text().catch(() => "");
           console.error("Non-JSON Error Response:", textError);
@@ -1012,7 +1086,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
             try {
               const data = JSON.parse(trimmed.slice(6));
               if (data.error) {
-                throw new Error(data.error);
+                throw new Error(parseFrontendError(data.error));
               }
               if (data.status) {
                 setStatusMessage(data.status);
@@ -1095,13 +1169,15 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
       setStreamingText('');
       finishBackgroundGeneration();
       
-      // Check if it's an API error (we threw it as a standard Error with a specific message)
-      if (error instanceof Error && !error.message.includes("permission-denied") && !error.message.includes("Missing or insufficient permissions")) {
+      const cleanErrorMsg = parseFrontendError(error);
+      
+      // Check if it's an API error (not a firestore permissions error)
+      if (!cleanErrorMsg.includes("permission-denied") && !cleanErrorMsg.includes("Missing or insufficient permissions")) {
         // Create an AI error bubble to display the issue
         if (chatId && userId) {
           try {
             await addDoc(collection(db, `users/${userId}/chats/${chatId}/messages`), {
-              text: `⚠️ **Error:** ${error.message}`,
+              text: `⚠️ **Error:** ${cleanErrorMsg}`,
               sender: 'ai',
               timestamp: serverTimestamp()
             });
@@ -1437,12 +1513,53 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
             </button>
             
             <div className="relative">
+              {/* Active Listening Soundwave Badge */}
+              <AnimatePresence>
+                {isListening && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 5, scale: 0.9 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 5, scale: 0.9 }}
+                    className="absolute -top-11 left-1/2 -translate-x-1/2 bg-red-500/10 dark:bg-red-950/50 border border-red-500/30 backdrop-blur-md px-3 py-1 rounded-full flex items-center gap-2 shadow-lg z-30 pointer-events-none"
+                  >
+                    <div className="flex items-center gap-0.5">
+                      <span className="w-1 h-3 bg-red-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-1 h-4 bg-red-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-1 h-2 bg-red-500 rounded-full animate-bounce" />
+                    </div>
+                    <span className="text-[11px] font-semibold text-red-500 whitespace-nowrap">
+                      {language === 'bn' ? 'শুনছি...' : 'Listening...'}
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <button 
                 onClick={toggleListening}
-                className={`p-2 transition-all rounded-full z-10 ${isListening ? 'text-red-500' : 'text-[var(--text-muted)] hover:text-[var(--text)]'}`}
-                title={isListening ? "Stop listening" : "Start voice input"}
+                disabled={!isSpeechSupported}
+                className={`p-2 transition-all rounded-full z-10 relative flex items-center justify-center ${
+                  !isSpeechSupported
+                    ? 'text-[var(--text-muted)]/40 cursor-not-allowed opacity-50'
+                    : isListening 
+                      ? 'text-red-500 bg-red-500/10 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.4)]' 
+                      : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]'
+                }`}
+                title={
+                  !isSpeechSupported
+                    ? (language === 'bn' ? "এই ব্রাউজারে স্পিচ রিকগনিশন সমর্থিত নয়" : "Speech recognition not supported in this browser")
+                    : isListening 
+                      ? (language === 'bn' ? "শুনছি... (থামাতে আবার ক্লিক করুন)" : "Listening... (click to stop)")
+                      : (language === 'bn' ? "ভয়েস ইনপুট শুরু করুন" : "Start voice input")
+                }
               >
-                {isListening ? <Square size={20} className="fill-current" /> : <Mic size={20} strokeWidth={1.5} />}
+                {isListening && (
+                  <span className="absolute inset-0 rounded-full bg-red-500/30 animate-ping pointer-events-none" />
+                )}
+                {isListening ? (
+                  <Square size={18} className="fill-current text-red-500" />
+                ) : (
+                  <Mic size={20} strokeWidth={1.5} />
+                )}
               </button>
               
               {/* Voice Command History Popover */}

@@ -1,24 +1,140 @@
 
 import express from "express";
 import dotenv from "dotenv";
-import { GoogleGenAI, Modality } from "@google/genai";
 import * as cheerio from "cheerio";
 
 dotenv.config({ override: true });
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "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";
+const RAW_BACKEND_KEYS = [
+  process.env.VITE_OPENROUTER_API_KEY_1 || process.env.VITE_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || "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",
+  process.env.VITE_OPENROUTER_API_KEY_2 || "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",
+  process.env.VITE_OPENROUTER_API_KEY_3 || "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",
+  process.env.VITE_OPENROUTER_API_KEY_4 || "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"
+];
+
+// Filter out empty or unconfigured strings so only valid active keys are stored in pool
+const OPENROUTER_API_KEYS = RAW_BACKEND_KEYS.filter(
+  (key): key is string => typeof key === 'string' && key.trim().length > 0
+);
+
+let currentKeyIndex = 0;
+
+function getActiveKey(customKey?: string): string {
+  if (customKey && customKey.startsWith("sk-or-")) {
+    return customKey;
+  }
+  if (OPENROUTER_API_KEYS.length === 0) return "";
+  return OPENROUTER_API_KEYS[currentKeyIndex % OPENROUTER_API_KEYS.length];
+}
+
+function rotateToNextKey(): string {
+  if (OPENROUTER_API_KEYS.length <= 1) {
+    return getActiveKey();
+  }
+  const prevIndex = currentKeyIndex;
+  currentKeyIndex = (currentKeyIndex + 1) % OPENROUTER_API_KEYS.length;
+  console.log(
+    `[Nexara Failover Engine] Key #${prevIndex + 1} exhausted. Auto-switching to Key #${currentKeyIndex + 1}...`
+  );
+  return OPENROUTER_API_KEYS[currentKeyIndex];
+}
+
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 const OPENROUTER_FREE_MODELS = [
-  "minimax/minimax-m3:free",
-  "minimax/minimax-m2.7:free",
-  "z-ai/glm-5.2:free",
-  "liquid/lfm-2.5-2.6b:free",
-  "nvidia/nemotron-3.5-lightning:free",
-  "google/gemma-4-31b-it:free",
-  "cohere/north-mini-code:free",
-  "openrouter/free"
+  "openrouter/free",
+  "google/gemma-2-9b-it:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "qwen/qwen-2.5-7b-instruct:free",
+  "mistralai/mistral-7b-instruct:free",
+  "nvidia/nemotron-4-340b-instruct:free"
 ];
+
+export function parseApiError(err: any): string {
+  if (!err) return "An unknown error occurred.";
+
+  if (typeof err === "string") {
+    const trimmed = err.trim();
+    if (trimmed === "[object Object]") return "An unexpected API error occurred.";
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return parseApiError(parsed);
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+
+  if (typeof err === "object") {
+    if (err.error) {
+      return parseApiError(err.error);
+    }
+    if (typeof err.message === "string" && err.message && err.message !== "[object Object]") {
+      return err.message;
+    }
+    if (typeof err.message === "object" && err.message) {
+      return parseApiError(err.message);
+    }
+    if (typeof err.detail === "string") {
+      return err.detail;
+    }
+    if (typeof err.msg === "string") {
+      return err.msg;
+    }
+    try {
+      const str = JSON.stringify(err);
+      if (str && str !== "{}" && str !== "[object Object]") {
+        return str;
+      }
+    } catch {
+      // Fallback
+    }
+  }
+
+  const fallback = String(err);
+  return fallback !== "[object Object]" ? fallback : "An unexpected API error occurred.";
+}
+
+function shouldTriggerWebSearch(userQuery: string, explicitSearchSetting?: boolean): boolean {
+  if (explicitSearchSetting === true) return true;
+  if (explicitSearchSetting === false) return false;
+  if (!userQuery || typeof userQuery !== "string") return false;
+
+  const text = userQuery.trim().toLowerCase();
+  if (!text) return false;
+
+  // If user provided an explicit URL link in message, enable search/web content processing
+  if (/(https?:\/\/[^\s]+)/.test(text)) {
+    return true;
+  }
+
+  // Common casual greetings and general identity questions - STRICTLY DO NOT trigger web search
+  const casualGreetingRegex = /^(hi|hello|hey|hy|hola|sup|yo|greetings|good\s*(morning|afternoon|evening|night)|how\s*are\s*you|how\s*r\s*u|how\s*is\s*it\s*going|whats\s*up|what's\s*up|who\s*are\s*you|what\s*is\s*your\s*name|who\s*made\s*you|who\s*created\s*you|who\s*built\s*you|কেমন\s*আছো|কেমন\s*আছেন|হাই|হ্যালো|হেই|নমস্কার|সালাম|আসসালামু\s*আলাইকুম|assalamu\s*alaikum|তুমি\s*কে|তোমার\s*নাম\s*কি|তোমাকে\s*কে\s*বানিয়েছে|তোমার\s*ডেভেলপার\s*কে|শুভ\s*(সকাল|সন্ধ্যা|রাত্রি))[!?.\s]*$/i;
+  
+  if (casualGreetingRegex.test(text)) {
+    return false;
+  }
+
+  // Explicit real-time / live search keywords
+  const realtimeKeywords = [
+    "search", "search the web", "search online", "google", "look up online", "browse the web",
+    "latest news", "current news", "today news", "today's news", "breaking news", "recent news",
+    "stock price", "crypto price", "live price", "current price", "btc price", "eth price", "share market",
+    "weather today", "current weather", "weather forecast", "temperature today",
+    "live score", "match score", "score today", "who won today",
+    "latest version", "release date", "recent update", "what happened today", "today's events",
+    "খবর", "আজকের খবর", "সর্বশেষ খবর", "লাইভ দাম", "শেয়ার বাজার", "আজকের আবহাওয়া", "আজকের খেলা", "লাইভ স্কোর"
+  ];
+
+  const hasRealtimeKeyword = realtimeKeywords.some(keyword => text.includes(keyword));
+  if (hasRealtimeKeyword) {
+    return true;
+  }
+
+  return false;
+}
 
 function sanitizeResponseText(text: string): string {
   if (!text) return "";
@@ -36,145 +152,208 @@ async function callOpenRouter(
   temperature: number = 0.7, 
   customKey?: string,
   onChunk?: (chunk: string) => void,
-  onStatus?: (status: string, tool?: string) => void
+  onStatus?: (status: string, tool?: string) => void,
+  enableWebSearch: boolean = false
 ) {
-  const apiKey = (customKey && customKey.startsWith("sk-or-")) ? customKey : OPENROUTER_API_KEY;
-  
-  // Try fast non-reasoning models list
-  const modelsToTry = [modelName, ...OPENROUTER_FREE_MODELS.filter(m => m !== modelName)];
-  let lastError = null;
+  const poolSize = OPENROUTER_API_KEYS.length;
+  const hasCustomKey = !!(customKey && customKey.startsWith("sk-or-"));
+  const totalKeyAttempts = hasCustomKey ? poolSize + 1 : poolSize;
 
-  for (const model of modelsToTry) {
-    try {
-      console.log(`[OpenRouter Fast Stream] Trying model: ${model}`);
-      // Default initial state is reasoning/thinking unless web search was explicitly triggered prior
-      if (onStatus) {
-        onStatus("Nexara AI is thinking...", "thinking");
-      }
+  if (poolSize === 0 && !hasCustomKey) {
+    throw new Error("Missing OpenRouter API key. Please configure API keys in environment or settings.");
+  }
 
-      let response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
-          "X-Title": "Nexara AI"
-        },
-        body: JSON.stringify({
+  const requestedModel = (!modelName || modelName === "openrouter/free") ? "openrouter/free" : modelName;
+
+  const modelsToTry = Array.from(new Set([
+    requestedModel,
+    "openrouter/free",
+    ...OPENROUTER_FREE_MODELS
+  ]));
+
+  let lastError: Error | null = null;
+  const refererUrl = process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://nexara-ai.com");
+
+  for (let keyAttempt = 0; keyAttempt < totalKeyAttempts; keyAttempt++) {
+    let activeApiKey: string;
+    let keyLabel: string;
+
+    if (keyAttempt === 0 && hasCustomKey) {
+      activeApiKey = customKey!;
+      keyLabel = "User Custom Key";
+    } else {
+      activeApiKey = getActiveKey();
+      keyLabel = `Pool Key #${currentKeyIndex + 1}`;
+    }
+
+    if (!activeApiKey) {
+      rotateToNextKey();
+      continue;
+    }
+
+    const headers: Record<string, string> = {
+      "Authorization": `Bearer ${activeApiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": refererUrl,
+      "X-Title": "Nexara AI"
+    };
+
+    let keyExhausted = false;
+
+    for (const model of modelsToTry) {
+      try {
+        console.log(`[OpenRouter Fast Stream | ${keyLabel}] Trying model: ${model} (Web Search: ${enableWebSearch})`);
+        if (onStatus) {
+          onStatus("Nexara AI is thinking...", "thinking");
+        }
+
+        const bodyPayload: any = {
           model: model,
           messages: messages,
           temperature: temperature,
-          stream: true,
-          plugins: [{ id: "web" }]
-        })
-      });
+          stream: true
+        };
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errMsg = errorData?.error?.message || `OpenRouter HTTP ${response.status}`;
-        console.warn(`[OpenRouter Warning] Model ${model} failed with web plugin (${response.status}): ${errMsg}. Retrying without plugin...`);
+        if (enableWebSearch) {
+          bodyPayload.plugins = [{ id: "web" }];
+        }
 
-        // Retry without web plugin
-        response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        let response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
           method: "POST",
-          headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
-            "X-Title": "Nexara AI"
-          },
-          body: JSON.stringify({
-            model: model,
-            messages: messages,
-            temperature: temperature,
-            stream: true
-          })
+          headers,
+          body: JSON.stringify(bodyPayload)
         });
-      }
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errMsg = errorData?.error?.message || `OpenRouter HTTP ${response.status}`;
-        console.warn(`[OpenRouter Warning] Model ${model} failed (${response.status}): ${errMsg}`);
-        lastError = new Error(errMsg);
-        continue;
-      }
+        if (!response.ok && enableWebSearch) {
+          const errorData = await response.json().catch(() => ({}));
+          const errMsg = parseApiError(errorData) || `OpenRouter HTTP ${response.status}`;
+          console.warn(`[OpenRouter Warning | ${keyLabel}] Model ${model} failed with web plugin (${response.status}): ${errMsg}. Retrying without plugin...`);
 
-      if (!response.body) {
-        throw new Error("No stream body returned");
-      }
+          // Retry without web plugin
+          delete bodyPayload.plugins;
+          response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(bodyPayload)
+          });
+        }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let accumulatedText = "";
-      let emittedLength = 0;
-      let currentMode: 'thinking' | 'web_search' | 'code_gen' | 'writing' = 'thinking';
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          const errMsg = parseApiError(errorData) || `OpenRouter HTTP ${response.status}`;
+          console.warn(`[OpenRouter Warning | ${keyLabel}] Model ${model} failed (${response.status}): ${errMsg}`);
+          lastError = new Error(errMsg);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        
-        let lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+          const isRateLimit = response.status === 429 || 
+                              response.status === 402 || 
+                              response.status === 403 || 
+                              errMsg.toLowerCase().includes("rate limit") || 
+                              errMsg.toLowerCase().includes("quota") || 
+                              errMsg.toLowerCase().includes("free-models-per-day") ||
+                              errMsg.toLowerCase().includes("insufficient");
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(":")) continue;
-          if (trimmed === "data: [DONE]") continue;
+          if (isRateLimit) {
+            keyExhausted = true;
+            break;
+          }
+          continue;
+        }
 
-          if (trimmed.startsWith("data: ")) {
-            try {
-              const json = JSON.parse(trimmed.slice(6));
-              const delta = json.choices?.[0]?.delta?.content;
-              if (delta) {
-                accumulatedText += delta;
+        if (!response.body) {
+          throw new Error("No stream body returned");
+        }
 
-                // Dynamically evaluate state transitions based on generated output
-                let nextMode: 'code_gen' | 'writing' = 'writing';
-                if (accumulatedText.includes('```') || accumulatedText.includes('filename=')) {
-                  nextMode = 'code_gen';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let accumulatedText = "";
+        let emittedLength = 0;
+        let currentMode: 'thinking' | 'web_search' | 'code_gen' | 'writing' = 'thinking';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          
+          let lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(":")) continue;
+            if (trimmed === "data: [DONE]") continue;
+
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const json = JSON.parse(trimmed.slice(6));
+                if (json.error) {
+                  const streamErrMsg = parseApiError(json.error);
+                  throw new Error(streamErrMsg);
                 }
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) {
+                  accumulatedText += delta;
 
-                if (currentMode !== nextMode) {
-                  currentMode = nextMode;
-                  if (onStatus) {
-                    if (nextMode === 'code_gen') {
-                      onStatus("Writing code...", "code_gen");
-                    } else {
-                      onStatus("Writing response...", "writing");
+                  let nextMode: 'code_gen' | 'writing' = 'writing';
+                  if (accumulatedText.includes('```') || accumulatedText.includes('filename=')) {
+                    nextMode = 'code_gen';
+                  }
+
+                  if (currentMode !== nextMode) {
+                    currentMode = nextMode;
+                    if (onStatus) {
+                      if (nextMode === 'code_gen') {
+                        onStatus("Writing code...", "code_gen");
+                      } else {
+                        onStatus("Writing response...", "writing");
+                      }
+                    }
+                  }
+
+                  if (onChunk) {
+                    const sanitizedSoFar = sanitizeResponseText(accumulatedText);
+                    if (sanitizedSoFar.length > emittedLength) {
+                      const chunkToEmit = sanitizedSoFar.slice(emittedLength);
+                      emittedLength = sanitizedSoFar.length;
+                      onChunk(chunkToEmit);
                     }
                   }
                 }
-
-                if (onChunk) {
-                  const sanitizedSoFar = sanitizeResponseText(accumulatedText);
-                  if (sanitizedSoFar.length > emittedLength) {
-                    const chunkToEmit = sanitizedSoFar.slice(emittedLength);
-                    emittedLength = sanitizedSoFar.length;
-                    onChunk(chunkToEmit);
-                  }
+              } catch (e: any) {
+                if (e?.message && !e.message.includes("Unexpected token")) {
+                  throw e;
                 }
               }
-            } catch (e) {
-              // Ignore partial JSON line parse error
             }
           }
         }
-      }
 
-      const sanitized = sanitizeResponseText(accumulatedText);
-      if (sanitized || accumulatedText) {
-        return sanitized || accumulatedText;
+        const sanitized = sanitizeResponseText(accumulatedText);
+        if (sanitized || accumulatedText) {
+          return sanitized || accumulatedText;
+        }
+      } catch (err: any) {
+        const errMsg = parseApiError(err);
+        console.warn(`[OpenRouter Stream Warning | ${keyLabel}] Exception calling ${model}:`, errMsg);
+        lastError = new Error(errMsg);
       }
-    } catch (err: any) {
-      console.warn(`[OpenRouter Stream Warning] Exception calling ${model}:`, err?.message || err);
-      lastError = err;
+    }
+
+    if (keyExhausted) {
+      if (keyAttempt === 0 && hasCustomKey) {
+        console.log(`[Nexara Failover Engine] Custom API key exhausted. Auto-switching to Pool Key #${currentKeyIndex + 1}...`);
+      } else {
+        rotateToNextKey();
+      }
+      continue;
+    }
+
+    if (keyAttempt < totalKeyAttempts - 1) {
+      rotateToNextKey();
     }
   }
 
-  throw lastError || new Error("All OpenRouter fast models failed.");
+  throw lastError || new Error("All API keys in the 4-key failover pool failed consecutively.");
 }
 
 const app = express();
@@ -182,70 +361,17 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.get("/api/health", async (req, res) => {
-  const geminiKey = process.env.GEMINI_API_KEY || "none";
-  let geminiWorks = false;
-  let geminiError = "none";
-  try {
-    const ai = new GoogleGenAI({ apiKey: geminiKey });
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: [{ role: "user", parts: [{ text: "reply ok" }] }]
-    });
-    geminiWorks = !!response.text;
-  } catch(e: any) {
-    geminiError = e.message;
-  }
-
+  const activeKey = getActiveKey();
   res.json({ 
     status: "ok", 
-    geminiKeyPrefix: geminiKey.substring(0, 4),
-    geminiWorks,
-    geminiError
+    activeKeyPoolSize: OPENROUTER_API_KEYS.length,
+    openRouterKeyPrefix: activeKey ? activeKey.substring(0, 8) : "none"
   });
 });
 
 app.post("/api/tts", async (req, res) => {
-  try {
-    const { text, apiKey: clientApiKey } = req.body;
-    
-    let apiKey = clientApiKey || process.env.API_KEY;
-    if (!apiKey && process.env.GEMINI_API_KEY && !process.env.GEMINI_API_KEY.startsWith("MY_")) {
-      apiKey = process.env.GEMINI_API_KEY;
-    }
-    
-    if (!apiKey) {
-      return res.status(500).json({ error: "Gemini API key not configured" });
-    }
-
-    const ai = new GoogleGenAI({ apiKey: apiKey });
-    
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-tts-preview",
-      contents: [{ parts: [{ text: text }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Puck' },
-            },
-        },
-      },
-    });
-
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
-      res.json({ audio: base64Audio });
-    } else {
-      res.status(500).json({ error: "No audio generated" });
-    }
-  } catch (error: any) {
-    if (error?.message?.includes("API key not valid")) {
-      console.warn("TTS API Warning: Invalid Gemini API key. Falling back to browser TTS.");
-    } else {
-      console.error("TTS API Error:", error);
-    }
-    res.status(500).json({ error: "Failed to generate speech" });
-  }
+  // Gracefully notify frontend to use high-quality Web Speech API synthesis
+  res.json({ fallbackToBrowser: true });
 });
 
 app.post("/api/chat", async (req, res) => {
@@ -291,26 +417,23 @@ app.post("/api/chat", async (req, res) => {
     };
     
     const langName = languageMap[language as string] || 'English';
-    const langInstruction = `CRITICAL RULE: You MUST reply in the EXACT SAME language the user asks in. For example, if the user asks in Bengali (bangla), you MUST reply entirely in natural, fluent Bengali. Do NOT use awkward machine translation tones. (The app's UI language is currently set to ${langName}, prioritize replying in the user's spoken language).`;
+    const langInstruction = `CRITICAL RULE: Match the user's input language automatically. If the user speaks Bengali (বাংলা), you MUST reply entirely in natural, fluent Bengali. If in English, respond in English. Do NOT use awkward machine translation tones. (App UI language is set to ${langName}).`;
     
     const memoryInstruction = memory ? `\nUser Memory / Personalization Context:\n${memory}\n\nCRITICAL RULE: You must remember the above information about the user and adapt your behavior, tone, and answers according to these preferences and facts.` : '';
 
-    const defaultSystemContent = `You are Nexara AI, an advanced, next-generation AI assistant platform engineered to empower users with chat, code generation, file artifacts, and real-time intelligence.
+    const defaultSystemContent = `You are Nexara AI, a high-performance next-generation AI assistant created and developed by Pretom Biswas.
 
-PRIMARY IDENTITY RULES:
-- Name: Nexara AI. Whenever asked "Who are you?", "What is your name?", "তোমার নাম কি?", or "তুমি কে?", ALWAYS introduce yourself directly as "Nexara AI".
-- Creator & Developer: Created and developed by PRETOM BISWAS. Whenever asked "Who made you?", "Who developed you?", "Who built you?", "Who is your creator?", "তোমাকে কে বানিয়েছে?", or "তোমার ডেভেলপার কে?", ALWAYS state clearly that you were created and developed by PRETOM BISWAS.
-- Persona: Always speak proudly as Nexara AI. Never claim to be ChatGPT, Claude, Gemini, or Llama directly. If asked about underlying models, explain that you are Nexara AI powered by cutting-edge neural architectures, built and engineered by PRETOM BISWAS.
-- Tone: Maintain a polite, professional, and inspiring tone.
+CONVERSATIONAL BEHAVIOR & IDENTITY:
+- Identity & Creator: You are Nexara AI, created and developed by Pretom Biswas. Whenever asked about your identity or creator ("Who are you?", "Who created you?", "Who built you?", "তুমি কে?", "তোমাকে কে বানিয়েছ?"), always state clearly and proudly that you are Nexara AI, created and developed by Pretom Biswas.
+- Casual Greetings: Respond naturally, warmly, and concisely to casual greetings (such as "hi", "hello", "how are you", "হাই", "কেমন আছো") without citing dictionary links, search engine sources, or dumping unnecessary definitions. Keep conversational replies direct, friendly, clean, and engaging.
+- Language Auto-Matching: Match the user's input language automatically. If the user speaks Bengali (বাংলা), respond in natural, fluent Bengali; if in English, respond in English; if in any other language, respond in that language. Do NOT use awkward machine translation phrasing.
 
-CODE & FILE ARTIFACT RULE:
-- When writing code, scripts, or multi-file projects, ALWAYS place all code inside fenced markdown code blocks with proper language tags and optional file names (e.g., \`\`\`tsx filename="App.tsx" or \`\`\`python script.py).
-- Keep conversational text concise, clean, and to the point. Do NOT write long redundant walls of text in the answer response — let the code file artifacts carry the implementation.
+CODE & ARTIFACTS RULE:
+- When writing code, scripts, or multi-file applications, place all code inside fenced markdown code blocks with proper language tags and file names (e.g., \`\`\`tsx filename="App.tsx" or \`\`\`python script.py). Keep conversational text concise and let code blocks handle implementation details.
 
-STRICT CITATION RULE:
-- Always embed direct markdown links [Source Name](URL) inside your response when referencing external information, news, or websites.
-- Ensure the links are functional and accurate.
-- Do NOT output any internal reasoning steps or <think> tags. Keep the answer concise, clean, and well-structured with Markdown.
+CITATION & FORMATTING RULE:
+- Only embed markdown citation links [Source Name](URL) when performing explicit web searches for real-time online information. Never attach dictionary links, search engine landing pages, or dictionary references for simple greetings or general knowledge answers.
+- Do NOT output internal reasoning steps or <think> tags. Keep responses direct, modern, clean, and visually well-structured.
 ${langInstruction}${memoryInstruction}`;
 
     const systemPrompt = {
@@ -322,11 +445,13 @@ ${langInstruction}${memoryInstruction}`;
     let scrapedImages: string[] = [];
     const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user');
     if (lastUserMessage) {
-        let latestContent = Array.isArray(lastUserMessage.content) 
-            ? lastUserMessage.content.find((p: any) => p.type === 'text' || p.text)?.text || ""
-            : typeof lastUserMessage.content === 'string' ? lastUserMessage.content : "";
-            
-        const urls = latestContent.match(/(https?:\/\/[^\s]+)/g);
+        if (Array.isArray(lastUserMessage.content)) {
+            lastUserText = lastUserMessage.content.find((p: any) => p.type === 'text' || p.text)?.text || "";
+        } else {
+            lastUserText = typeof lastUserMessage.content === 'string' ? lastUserMessage.content : "";
+        }
+
+        const urls = lastUserText.match(/(https?:\/\/[^\s]+)/g);
         if (urls && urls.length > 0) {
             for (let i = 0; i < Math.min(urls.length, 2); i++) {
                 try {
@@ -403,136 +528,22 @@ ${langInstruction}${memoryInstruction}`;
         systemPrompt.content += `\n\nCRITICAL CONTEXT:\nThe user shared the following web link(s). I have automatically scraped their textual content and image URLs for you. Read it and answer based on this content. IMPORTANT: If there are "Available Images" in the scraped content, you MUST include at least 1 to 3 of them in your response using markdown syntax (e.g. ![Image](url)) so the user can see what the webpage looks like.\n\n${urlScrapedContent.substring(0, 15000)}`;
     }
 
-    let geminiApiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey.startsWith("AIza")) geminiApiKey = apiKey;
+    // Determine whether web search plugin should be triggered
+    const enableWebSearch = shouldTriggerWebSearch(lastUserText, req.body.webSearch);
 
-    // Use Gemini for everything if we have a valid key, else use Groq for text
-    const useGemini = false; // Forced to false based on user preference
-
-    if (useGemini) {
-      const isBn = language === 'bn';
-      if (!geminiApiKey || geminiApiKey.startsWith("MY_") || !geminiApiKey.startsWith("AIza")) {
-        const errMsg = isBn 
-          ? "সঠিক Gemini API Key প্রয়োজন। দয়া করে সেটিংস (Settings) থেকে আপনার API Key যুক্ত করুন।"
-          : "A valid Gemini API key is required. Please add one in Settings.";
-        return res.status(500).json({ error: errMsg });
-      }
-      
-      const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-      
-      const geminiContents = messages.map((m: any) => {
-        const parts = [];
-        if (Array.isArray(m.content)) {
-          for (const item of m.content) {
-            if (item.type === 'text') {
-              parts.push({ text: item.text });
-            } else if (item.type === 'image_url') {
-              const url = item.image_url.url;
-              const match = url.match(/^data:(image\/[a-zA-Z]*);base64,([^\"]*)$/);
-              if (match) {
-                parts.push({
-                  inlineData: {
-                    mimeType: match[1],
-                    data: match[2]
-                  }
-                });
-              }
-            }
-          }
-        } else {
-          parts.push({ text: m.content });
-        }
-        return {
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts
-        };
-      });
-      
-      try {
-        const response = await ai.models.generateContent({
-          model: "gemini-2.0-flash",
-          contents: geminiContents,
-          config: {
-            systemInstruction: systemPrompt.content,
-            tools: [{ googleSearch: {} }, { urlContext: {} }]
-          }
-        });
-        
-        let reply = response.text || "";
-        
-        // Extract Grounding metadata
-        const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-        if (chunks && chunks.length > 0) {
-            const urls = chunks
-                .map((c: any) => c.web?.uri)
-                .filter(Boolean);
-            
-            if (urls.length > 0) {
-                const uniqueUrls = Array.from(new Set(urls));
-                reply += `\n\n**Sources:**\n${uniqueUrls.map(u => `- [${u}](${u})`).join('\n')}`;
-            }
-        }
-        
-        if (scrapedImages.length > 0) {
-            let imgBlock = `\n\n---\n### 🖼️ Website Images (Scraped)\n\n`;
-            let addedCount = 0;
-            for (const img of scrapedImages) {
-                if (!reply.includes(img)) {
-                    imgBlock += `![Website Scraped Image](${img})\n\n`;
-                    addedCount++;
-                }
-            }
-            if (addedCount > 0) {
-                reply += imgBlock;
-            }
-        }
-
-        res.json({ reply });
-        return;
-      } catch (geminiError: any) {
-        console.error("Gemini Vision Error:", geminiError);
-        // Fallback to groq if it's not an image and Gemini fails
-        if (!hasImage && process.env.GROQ_API_KEY) {
-           console.log("Falling back to Groq since it's just text...");
-           // Continue below
-        } else {
-            if (geminiError?.message?.includes("429") || geminiError?.status === 429 || geminiError?.status === "RESOURCE_EXHAUSTED" || geminiError?.message?.includes("RESOURCE_EXHAUSTED") || geminiError?.message?.includes("Quota exceeded")) {
-              const errMsg = isBn
-                ? "আপনার Gemini API Key এর ফ্রি টায়ার কোটা শেষ হয়ে গেছে। ছবি স্ক্যান করার জন্য বিলিং সেটআপ করুন।"
-                : "Your Gemini API key has exceeded its free tier quota. Please set up a billing account on Google AI Studio.";
-              return res.status(500).json({ error: errMsg });
-            }
-            if (geminiError?.message?.includes("API key not valid") || geminiError?.message?.includes("Invalid API Key") || geminiError?.status === "INVALID_ARGUMENT") {
-              const errMsg = isBn
-                ? "আপনার Gemini API Key টি সঠিক নয় বা ভ্যালিড নয়। দয়া করে সেটিংস থেকে সঠিক API Key দিন।"
-                : "Your Gemini API key is invalid or not valid. Please check your Settings.";
-               // If it's a 400 error we return 401 or 400
-              return res.status(geminiError?.status === "INVALID_ARGUMENT" ? 400 : 401).json({ error: errMsg });
-            }
-            if (geminiError?.status === 503) {
-              const errMsg = isBn
-                ? "AI মডেল সার্ভারটি বর্তমানে অতিরিক্ত ব্যস্ত। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।"
-                : "The AI model is temporarily unavailable. Please try again.";
-              return res.status(503).json({ error: errMsg });
-            }
-            if (geminiError?.message?.includes("not found")) {
-               return res.status(500).json({ error: "Gemini Model not found. The model might have been deprecated." });
-            }
-            return res.status(500).json({ error: geminiError?.message || "Failed to process with Gemini AI" });
-        }
-      }
-    }
-    
-    // Primary execution via OpenRouter API with multi-model fallback (Fast non-reasoning streaming)
+    // Primary execution via OpenRouter API with multi-model fallback (Llama 3.3 70B, DeepSeek R1, Qwen 2.5, MiniMax, Gemini via OpenRouter)
     let reply = "";
-    let openRouterModel = hasImage ? "openrouter/free" : (req.body.model || "openrouter/free");
+    let openRouterModel = (req.body.model && req.body.model.includes('/')) 
+      ? req.body.model 
+      : "openrouter/free";
     let finalMessages = [];
 
     if (hasImage) {
       let combinedText = "System Instructions:\n" + systemPrompt.content + "\n\n";
+      const visionConstraint = "Analyze the provided image with high precision. Isolate and parse text, mathematical formulas, and symbols pixel-by-pixel. Do NOT merge context or memory from previously analyzed images. Avoid hallucinating unread text or complex equations. Always restrict your analysis strictly to the provided image. Focus on high-precision object detection first, then extract fine details without guessing.";
       const visionInstruction = language === 'bn' ? 
-          "ব্যবহারকারী বাংলায় প্রশ্ন করলে বাংলায় উত্তর দাও। ছবিটি ভালোভাবে দেখে তারপর উত্তর দাও। ছবিতে যা সত্যিই দেখা যাচ্ছে শুধু সেটির ভিত্তিতে উত্তর দাও। নিশ্চিত না হলে অনুমান করো না; পরিষ্কারভাবে বলো যে বিষয়টি অস্পষ্ট।" : 
-          "You are a highly accurate visual analysis assistant. You must carefully inspect the provided image before answering. Base your answer only on information actually visible in the image. Do not guess, hallucinate, or invent objects, text, people, colors, or details that are not visible. If something is unclear or unreadable, explicitly say that it is unclear. When the user asks about text in the image, carefully inspect and transcribe only the visible text.";
+          `Analyze the provided image with high precision. Isolate and parse text, mathematical formulas, and symbols pixel-by-pixel. Do NOT merge context or memory from previously analyzed images. Avoid hallucinating unread text or complex equations. ব্যবহারকারী বাংলায় প্রশ্ন করলে বাংলায় উত্তর দাও। ছবিটি ভালোভাবে দেখে তারপর উত্তর দাও। ছবিতে যা সত্যিই দেখা যাচ্ছে শুধু সেটির ভিত্তিতে উত্তর দাও। নিশ্চিত না হলে অনুমান করো না; পরিষ্কারভাবে বলো যে বিষয়টি অস্পষ্ট। ${visionConstraint}` : 
+          `You are a highly accurate visual analysis assistant. Analyze the provided image with high precision. Isolate and parse text, mathematical formulas, and symbols pixel-by-pixel. Do NOT merge context or memory from previously analyzed images. Avoid hallucinating unread text or complex equations. Base your answer only on information actually visible in the image. Do not guess, hallucinate, or invent objects, text, people, colors, or details that are not visible. If something is unclear or unreadable, explicitly say that it is unclear. When the user asks about text in the image, carefully inspect and transcribe only the visible text. ${visionConstraint}`;
       combinedText += "Vision Instructions:\n" + visionInstruction + "\n\n";
       
       let allImages = [];
@@ -585,29 +596,27 @@ ${langInstruction}${memoryInstruction}`;
           },
           (status, tool) => {
             res.write(`data: ${JSON.stringify({ status, tool })}\n\n`);
-          }
+          },
+          enableWebSearch
         );
       } catch (openRouterErr: any) {
-        console.warn("OpenRouter API streaming failed, attempting Gemini fallback:", openRouterErr?.message || openRouterErr);
-        const geminiApiKey = process.env.GEMINI_API_KEY;
-        if (geminiApiKey && !geminiApiKey.startsWith("MY_")) {
-          try {
-            const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-            const geminiRes = await ai.models.generateContent({
-              model: "gemini-3.6-flash",
-              contents: [{ role: "user", parts: [{ text: typeof messages[messages.length - 1]?.content === 'string' ? messages[messages.length - 1].content : "Hello" }] }]
-            });
-            reply = sanitizeResponseText(geminiRes.text || "");
-            res.write(`data: ${JSON.stringify({ chunk: reply })}\n\n`);
-          } catch (gErr: any) {
-            console.error("Gemini fallback error:", gErr);
-            res.write(`data: ${JSON.stringify({ error: openRouterErr?.message || "Failed to generate AI response" })}\n\n`);
-            return res.end();
+        let cleanErr = parseApiError(openRouterErr);
+        console.warn("OpenRouter API streaming error:", cleanErr);
+
+        const isCustomKey = !!(apiKey && apiKey.startsWith("sk-or-"));
+        if (cleanErr.includes("429") || cleanErr.toLowerCase().includes("rate limit") || cleanErr.includes("free-models-per-day") || cleanErr.toLowerCase().includes("quota")) {
+          if (!isCustomKey) {
+            cleanErr = language === 'bn'
+              ? "নেক্সারা এআই এর জন্য নির্ধারিত ফ্রি ওপেনরাউটার দৈনিক রিকোয়েস্ট সীমা কোটা শেষ হয়ে গেছে। নিরবচ্ছিন্নভাবে কথা বলতে সেটিংস (Settings ⚙️) পেজ থেকে আপনার নিজের OpenRouter API Key টি সেট করুন।"
+              : "The default OpenRouter daily free quota has been reached. Please add your own OpenRouter API Key in Settings (⚙️) to continue chatting seamlessly.";
+          } else {
+            cleanErr = language === 'bn'
+              ? "আপনার OpenRouter API Key-এর রিকোয়েস্ট সীমা বা কোটা শেষ হয়ে গেছে। দয়া করে আপনার OpenRouter ক্রেডিট চেক করুন।"
+              : "Your custom OpenRouter API key rate limit or quota has been exceeded. Please check your OpenRouter credits.";
           }
-        } else {
-          res.write(`data: ${JSON.stringify({ error: openRouterErr?.message || "Failed to generate AI response" })}\n\n`);
-          return res.end();
         }
+        res.write(`data: ${JSON.stringify({ error: cleanErr })}\n\n`);
+        return res.end();
       }
 
       if (scrapedImages.length > 0) {
@@ -631,20 +640,11 @@ ${langInstruction}${memoryInstruction}`;
     } else {
       // Non-streaming JSON fallback
       try {
-        reply = await callOpenRouter(openRouterModel, finalMessages, temperature !== undefined ? temperature : 0.7, apiKey);
+        reply = await callOpenRouter(openRouterModel, finalMessages, temperature !== undefined ? temperature : 0.7, apiKey, undefined, undefined, enableWebSearch);
       } catch (openRouterErr: any) {
-        console.warn("OpenRouter API call failed, attempting Gemini fallback:", openRouterErr?.message || openRouterErr);
-        const geminiApiKey = process.env.GEMINI_API_KEY;
-        if (geminiApiKey && !geminiApiKey.startsWith("MY_")) {
-          const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-          const geminiRes = await ai.models.generateContent({
-            model: "gemini-3.6-flash",
-            contents: [{ role: "user", parts: [{ text: typeof messages[messages.length - 1]?.content === 'string' ? messages[messages.length - 1].content : "Hello" }] }]
-          });
-          reply = sanitizeResponseText(geminiRes.text || "");
-        } else {
-          throw openRouterErr;
-        }
+        const cleanErr = parseApiError(openRouterErr);
+        console.warn("OpenRouter API call failed:", cleanErr);
+        throw new Error(cleanErr);
       }
 
       if (scrapedImages.length > 0) {
@@ -665,26 +665,28 @@ ${langInstruction}${memoryInstruction}`;
     }
   } catch (error: any) {
     console.error("API Error:", error);
+    const parsedErr = parseApiError(error);
+    const isCustomKey = !!(req.body.apiKey && typeof req.body.apiKey === "string" && req.body.apiKey.startsWith("sk-or-"));
     
-    let errorMessage = "Failed to fetch AI response";
-    if (error?.message?.includes("API key not valid") || error?.message?.includes("Invalid API Key")) {
-      errorMessage = "The API key is invalid. Please check your Settings.";
-    } else if (error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("quota") || error?.message?.includes("rate limit") || error?.status === "RESOURCE_EXHAUSTED") {
+    let errorMessage = parsedErr || "Failed to fetch AI response";
+    if (parsedErr.includes("API key not valid") || parsedErr.includes("Invalid API Key")) {
       errorMessage = req.body.language === 'bn' 
-        ? "আপনার API Key এর কোটা শেষ হয়ে গেছে বা একাধিক রিকোয়েস্ট একসাথে করা হয়েছে।" 
-        : "You have exceeded your API key rate limit or quota. Please check your billing details.";
-    } else if (error?.status === 400 && (error?.error?.message?.includes("max_tokens") || error?.message?.includes("max_tokens"))) {
-      errorMessage = req.body.language === 'bn'
-        ? "মডেলটি এত বড় রেসপন্স সাপোর্ট করে না। দয়া করে ছোট প্রশ্ন করুন।"
-        : "The AI model's response length limit was exceeded. Please try again with a shorter prompt.";
-    } else if (error?.error?.message) {
-      errorMessage = error.error.message;
-    } else if (error?.message) {
-      errorMessage = error.message;
+        ? "আপনার API Key টি সঠিক নয়। দয়া করে সেটিংস থেকে সঠিক Key যুক্ত করুন।"
+        : "The API key is invalid. Please check your Settings.";
+    } else if (parsedErr.includes("429") || parsedErr.includes("RESOURCE_EXHAUSTED") || parsedErr.includes("quota") || parsedErr.toLowerCase().includes("rate limit") || parsedErr.includes("free-models-per-day")) {
+      if (!isCustomKey) {
+        errorMessage = req.body.language === 'bn' 
+          ? "নেক্সারা এআই এর জন্য নির্ধারিত ফ্রি ওপেনরাউটার দৈনিক রিকোয়েস্ট সীমা কোটা শেষ হয়ে গেছে। নিরবচ্ছিন্নভাবে কথা বলতে সেটিংস (Settings ⚙️) পেজ থেকে আপনার নিজের OpenRouter API Key টি সেট করুন।" 
+          : "The default OpenRouter daily free quota has been reached. Please add your own OpenRouter API Key in Settings (⚙️) to continue chatting seamlessly.";
+      } else {
+        errorMessage = req.body.language === 'bn'
+          ? "আপনার OpenRouter API Key-এর রিকোয়েস্ট সীমা বা কোটা শেষ হয়ে গেছে। দয়া করে আপনার OpenRouter ক্রেডিট চেক করুন।"
+          : "Your custom OpenRouter API key rate limit or quota has been exceeded. Please check your OpenRouter credits.";
+      }
     }
 
-    if (error?.status === 503) {
-      return res.status(503).json({ error: "The AI model is currently experiencing high demand and is temporarily unavailable. Please try again in connection few minutes." });
+    if (error?.status === 503 || parsedErr.includes("503")) {
+      return res.status(503).json({ error: "The AI model is currently experiencing high demand and is temporarily unavailable. Please try again in a few minutes." });
     }
     
     res.status(error?.status || 500).json({ error: errorMessage });

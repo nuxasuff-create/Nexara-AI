@@ -9,7 +9,7 @@ interface TopBarProps {
 
 export default function TopBar({ title, onMenuClick, user }: TopBarProps) {
   return (
-    <div className="h-16 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 bg-[var(--glass-bg)] backdrop-blur-2xl border-b border-[var(--glass-border)] transition-colors duration-500">
+    <header className="h-16 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 bg-[var(--glass-bg)] backdrop-blur-2xl border-b border-[var(--glass-border)] transition-colors duration-500">
       <div className="flex items-center gap-3 relative z-10 w-full overflow-hidden">
         <button
           onClick={onMenuClick}
@@ -40,6 +40,6 @@ export default function TopBar({ title, onMenuClick, user }: TopBarProps) {
           )}
         </button>
       </div>
-    </div>
+    </header>
   );
 }

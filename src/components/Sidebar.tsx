@@ -154,7 +154,7 @@ export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScre
       </AnimatePresence>
 
       {/* Sidebar Content */}
-      <div
+      <aside
         className={`fixed inset-y-0 left-0 z-50 w-64 md:w-[280px] bg-[var(--sidebar)]/95 backdrop-blur-3xl border-r border-[var(--glass-border)] transition-transform duration-300 ease-in-out flex flex-col ${
           isOpen ? 'translate-x-0 shadow-2xl shadow-black/20' : '-translate-x-full'
         } md:translate-x-0 md:static`}
@@ -314,7 +314,7 @@ export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScre
             </div>
           </div>
           {/* Footer */}
-          <div className="p-4 border-t border-[var(--glass-border)] bg-[var(--sidebar)]/50 backdrop-blur-md">
+          <footer className="p-4 border-t border-[var(--glass-border)] bg-[var(--sidebar)]/50 backdrop-blur-md">
             <div className="relative overflow-hidden rounded-[14px] p-4 border border-[var(--glass-border)] bg-gradient-to-br from-indigo-500/10 via-purple-500/10 to-pink-500/10 cursor-pointer hover:shadow-lg hover:shadow-primary/10 hover:-translate-y-0.5 transition-all duration-300 group" onClick={onUpgradeClick}>
               {/* Animated glow */}
               <div className="absolute inset-0 bg-gradient-to-r from-primary/0 via-primary/5 to-primary/0 opacity-0 group-hover:opacity-100 group-hover:translate-x-full transition-all duration-1000 -skew-x-12" />
@@ -332,9 +332,9 @@ export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScre
                 </div>
               </div>
             </div>
-          </div>
+          </footer>
         </div>
-      </div>
+      </aside>
 
       {/* Delete Confirmation Modal */}
       <AnimatePresence>

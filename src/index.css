@@ -1,0 +1,205 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #818cf8;
+  --color-primary-dark: #6366f1;
+  --font-sans: "Georgia", serif;
+  --font-display: "Georgia", serif;
+}
+
+@layer base {
+  :root {
+    --bg: #FAFAFC;
+    --card: #FFFFFF;
+    --hover: rgba(0, 0, 0, 0.03);
+    --text: #0F172A;
+    --text-muted: #64748B;
+    --border: rgba(0, 0, 0, 0.06);
+    --ai-bubble: rgba(255, 255, 255, 0.6);
+    --user-bubble: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    --user-text: #FFFFFF;
+    --sidebar: rgba(255, 255, 255, 0.8);
+    --glass-bg: rgba(255, 255, 255, 0.6);
+    --glass-border: rgba(255, 255, 255, 0.4);
+    --shadow-premium: 0 20px 40px -15px rgba(0,0,0,0.05);
+  }
+
+  .dark {
+    --bg: #030305;
+    --card: #0F0F13;
+    --hover: rgba(255, 255, 255, 0.05);
+    --text: #F8FAFC;
+    --text-muted: #94A3B8;
+    --border: rgba(255, 255, 255, 0.08);
+    --ai-bubble: rgba(25, 25, 30, 0.6);
+    --user-bubble: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    --user-text: #FFFFFF;
+    --sidebar: rgba(10, 10, 14, 0.8);
+    --glass-bg: rgba(15, 15, 20, 0.6);
+    --glass-border: rgba(255, 255, 255, 0.05);
+    --shadow-premium: 0 20px 40px -15px rgba(0,0,0,0.5);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    transition: background-color 0.4s ease, color 0.4s ease;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+@keyframes cursor-pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 10px rgba(34, 211, 238, 0.9), 0 0 18px rgba(52, 211, 153, 0.6);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+    box-shadow: 0 0 4px rgba(34, 211, 238, 0.3);
+  }
+}
+
+.nexara-glowing-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1.15em;
+  margin-left: 4px;
+  vertical-align: -0.15em;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #22d3ee 0%, #34d399 100%);
+  animation: cursor-pulse-glow 0.8s ease-in-out infinite;
+}
+
+@keyframes markdownBlockFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.markdown-body {
+  word-break: break-word;
+}
+
+.markdown-body pre,
+.markdown-body table,
+.markdown-body blockquote {
+  animation: markdownBlockFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
+}
+.markdown-body p {
+  margin-bottom: 0.75rem;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body pre {
+  background-color: var(--glass-bg);
+  border: 1px solid var(--border);
+  padding: 1rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  margin-y: 1rem;
+}
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background-color: var(--glass-bg);
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 85%;
+}
+.markdown-body pre code {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 100%;
+}
+.markdown-body ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  line-height: 1.25;
+}
+.markdown-body a {
+  color: var(--primary-light);
+  text-decoration: underline;
+}
+
+.markdown-body table {
+  width: 100%;
+  margin-bottom: 1rem;
+  border-collapse: collapse;
+  overflow-x: auto;
+  display: block;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+}
+
+.markdown-body th {
+  background-color: var(--glass-bg);
+  font-weight: 600;
+  text-align: left;
+}
+
+.markdown-body tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+.dark .markdown-body tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.markdown-body img {
+  border-radius: 0.75rem;
+  max-width: 100%;
+  height: auto;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}

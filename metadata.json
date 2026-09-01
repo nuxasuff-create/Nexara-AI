@@ -1,0 +1,10 @@
+{
+  "name": "Nexara AI",
+  "description": "Nexara AI is a modern next-generation AI platform developed by Pretom Biswas, featuring real-time web search, interactive code artifacts, and advanced multimodality.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

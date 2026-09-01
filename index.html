@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="shortcut icon" href="/logo.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="canonical" href="https://nexara-ai.com/" />
+    <meta name="theme-color" content="#6366f1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <!-- Primary SEO Meta Tags -->
+    <title>Nexara AI – The Next Era of Artificial Intelligence</title>
+    <meta name="description" content="Nexara AI is a modern next-generation AI platform developed by Pretom Biswas, featuring real-time web search, interactive code artifacts, and advanced multimodality." />
+    <meta name="keywords" content="Nexara AI, Pretom Biswas, Next Era AI, web search AI, code artifacts, AI tool" />
+    <meta name="author" content="Pretom Biswas" />
+    <meta name="robots" content="index, follow" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://nexara-ai.com/" />
+    <meta property="og:site_name" content="Nexara AI" />
+    <meta property="og:title" content="Nexara AI – The Next Era of Artificial Intelligence" />
+    <meta property="og:description" content="Nexara AI is a modern next-generation AI platform developed by Pretom Biswas, featuring real-time web search, interactive code artifacts, and advanced multimodality." />
+    <meta property="og:image" content="/logo.png" />
+    
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Nexara AI – The Next Era of Artificial Intelligence" />
+    <meta name="twitter:description" content="Nexara AI is a modern next-generation AI platform developed by Pretom Biswas, featuring real-time web search, interactive code artifacts, and advanced multimodality." />
+    <meta name="twitter:image" content="/logo.png" />
+    
+    <!-- JSON-LD Structured Data (Schema.org) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Nexara AI",
+      "alternateName": "The Next Era of AI",
+      "url": "https://nexara-ai.com",
+      "logo": "https://nexara-ai.com/logo.png",
+      "author": {
+        "@type": "Person",
+        "name": "Pretom Biswas"
+      },
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "All"
+    }
+    </script>
+    
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8481472007187363" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then(registration => {
+            console.log('SW registered: ', registration);
+          }).catch(registrationError => {
+            console.log('SW registration failed: ', registrationError);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

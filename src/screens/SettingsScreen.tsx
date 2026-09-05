@@ -10,11 +10,12 @@ import React, { useState, useEffect } from 'react';
 interface SettingsScreenProps {
   toggleTheme: () => void;
   isDark: boolean;
+  onOpenOnboarding?: () => void;
 }
 
 type SettingsTab = 'main' | 'profile' | 'privacy' | 'notifications' | 'memory';
 
-export default function SettingsScreen({ toggleTheme, isDark }: SettingsScreenProps) {
+export default function SettingsScreen({ toggleTheme, isDark, onOpenOnboarding }: SettingsScreenProps) {
   const { language, setLanguage, t } = useLanguage();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('main');
@@ -613,6 +614,18 @@ export default function SettingsScreen({ toggleTheme, isDark }: SettingsScreenPr
         >
           {isUpdatingMemory ? (language === 'bn' ? 'আপডেট হচ্ছে...' : 'Updating...') : (language === 'bn' ? 'সেভ করুন' : 'Save Memory')}
         </button>
+
+        {onOpenOnboarding && (
+          <div className="pt-4 border-t border-[var(--border)] text-center">
+            <button
+              type="button"
+              onClick={onOpenOnboarding}
+              className="px-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-xl text-xs font-semibold transition-all"
+            >
+              {language === 'bn' ? '⚙️ পুনরায় AI সেটআপ উইজার্ড চালু করুন' : '⚙️ Re-run AI Setup Wizard'}
+            </button>
+          </div>
+        )}
       </form>
     </motion.div>
   );

@@ -70,6 +70,9 @@ export const translations = {
     errorEmailInUse: 'Email already in use.',
     errorWeakPassword: 'Password should be at least 6 characters.',
     errorDefault: 'An error occurred. Please try again.',
+    focusMode: 'Focus Mode',
+    readingMode: 'Reading Mode',
+    exitFocus: 'Exit Focus',
   },
   bn: {
     welcome: 'স্বাগতম!',
@@ -131,6 +134,9 @@ export const translations = {
     errorEmailInUse: 'ইমেইল ইতিমধ্যে ব্যবহৃত হচ্ছে।',
     errorWeakPassword: 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।',
     errorDefault: 'একটি ত্রুটি ঘটেছে। আবার চেষ্টা করুন।',
+    focusMode: 'ফোকাস মোড',
+    readingMode: 'রিডিং মোড',
+    exitFocus: 'ফোকাস ত্যাগ করুন',
   },
   zh: {
     welcome: '欢迎回来！',
@@ -192,6 +198,9 @@ export const translations = {
     errorEmailInUse: '电子邮件已被使用。',
     errorWeakPassword: '密码至少应包含 6 个字符。',
     errorDefault: '发生错误。请重试。',
+    focusMode: '专注模式',
+    readingMode: '阅读模式',
+    exitFocus: '退出专注',
   },
   hi: {
     welcome: 'वापसी पर स्वागत है!',
@@ -253,6 +262,9 @@ export const translations = {
     errorEmailInUse: 'ईमेल पहले से ही उपयोग में है।',
     errorWeakPassword: 'पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।',
     errorDefault: 'एक त्रुटि हुई। कृपया पुन: प्रयास करें।',
+    focusMode: 'फोकस मोड',
+    readingMode: 'रीडिंग मोड',
+    exitFocus: 'फोकस से बाहर निकलें',
   },
   es: {
     welcome: '¡Bienvenido de nuevo!',
@@ -314,6 +326,9 @@ export const translations = {
     errorEmailInUse: 'El correo electrónico ya está en uso.',
     errorWeakPassword: 'La contraseña debe tener al menos 6 caracteres.',
     errorDefault: 'Ocurrió un error. Por favor, inténtalo de nuevo.',
+    focusMode: 'Modo Enfoque',
+    readingMode: 'Modo Lectura',
+    exitFocus: 'Salir de Enfoque',
   },
   fr: {
     welcome: 'Bon retour !',
@@ -375,5 +390,8 @@ export const translations = {
     errorEmailInUse: 'L\'e-mail est déjà utilisé.',
     errorWeakPassword: 'Le mot de passe doit comporter au moins 6 caractères.',
     errorDefault: 'Une erreur s\'est produite. Veuillez réessayer.',
+    focusMode: 'Mode Focus',
+    readingMode: 'Mode Lecture',
+    exitFocus: 'Quitter le Focus',
   }
 };

@@ -7,6 +7,7 @@ import SettingsScreen from './screens/SettingsScreen';
 import LoginScreen from './screens/LoginScreen';
 import AdminScreen from './screens/AdminScreen';
 import UpgradeModal from './components/UpgradeModal';
+import OnboardingModal from './components/OnboardingModal';
 import { Plus, AlertCircle, Lock, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -26,6 +27,8 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
+  const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
   const { t, language } = useLanguage();
 
   useEffect(() => {
@@ -44,6 +47,12 @@ export default function App() {
               status: 'Basick',
               createdAt: new Date()
             }, { merge: true });
+            setIsOnboardingModalOpen(true);
+          } else {
+            const data = docSnap.data();
+            if (!data.onboardingCompleted) {
+              setIsOnboardingModalOpen(true);
+            }
           }
         } catch (error) {
           console.error("Firestore user fetch error (rules may not be configured):", error);
@@ -157,6 +166,18 @@ export default function App() {
     setCurrentScreen('chat');
   };
 
+  useEffect(() => {
+    if (isFocusMode) {
+      setIsSidebarOpen(false);
+    }
+  }, [isFocusMode]);
+
+  useEffect(() => {
+    if (user && userStatus === 'Band' && user.email === 'ashtosh.biswas.2026@gmail.com') {
+      updateDoc(doc(db, 'users', user.uid), { status: 'Basick' });
+    }
+  }, [user, userStatus]);
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-[var(--bg)]">
@@ -170,9 +191,6 @@ export default function App() {
   }
 
   if (userStatus === 'Band') {
-    if (user.email === 'ashtosh.biswas.2026@gmail.com') {
-      updateDoc(doc(db, 'users', user.uid), { status: 'Basick' });
-    }
     return (
       <div className="flex h-screen items-center justify-center bg-[var(--bg)] p-4">
         <div className="max-w-md w-full bg-[var(--card)] border border-red-500/20 rounded-3xl p-8 text-center shadow-2xl">
@@ -197,7 +215,7 @@ export default function App() {
       case 'dashboard':
         return <DashboardScreen onToolClick={handleToolClick} onUpgradeClick={() => setIsUpgradeModalOpen(true)} userStatus={userStatus} />;
       case 'settings':
-        return <SettingsScreen toggleTheme={toggleTheme} isDark={isDark} />;
+        return <SettingsScreen toggleTheme={toggleTheme} isDark={isDark} onOpenOnboarding={() => setIsOnboardingModalOpen(true)} />;
       case 'admin':
         return <AdminScreen />;
       case 'chat':
@@ -208,6 +226,8 @@ export default function App() {
                  currentChatId={currentChatId}
                  setCurrentChatId={setCurrentChatId}
                  setCurrentScreen={setCurrentScreen}
+                 isFocusMode={isFocusMode}
+                 onToggleFocusMode={() => setIsFocusMode(!isFocusMode)}
                />;
     }
   };
@@ -260,6 +280,7 @@ export default function App() {
         user={user}
         onUpgradeClick={() => setIsUpgradeModalOpen(true)}
         isAdmin={isAdmin}
+        isFocusMode={isFocusMode}
       />
 
       {/* Main Content */}
@@ -268,6 +289,8 @@ export default function App() {
           title={getScreenTitle()}
           onMenuClick={() => setIsSidebarOpen(true)}
           user={user}
+          isFocusMode={isFocusMode}
+          onToggleFocusMode={() => setIsFocusMode(!isFocusMode)}
         />
         
         <main className="flex-1 relative overflow-hidden bg-transparent">
@@ -289,6 +312,20 @@ export default function App() {
       <UpgradeModal 
         isOpen={isUpgradeModalOpen} 
         onClose={() => setIsUpgradeModalOpen(false)} 
+      />
+
+      <OnboardingModal
+        isOpen={isOnboardingModalOpen}
+        initialDisplayName={user.displayName || ''}
+        initialEmail={user.email || ''}
+        onClose={(selectedPrompt) => {
+          setIsOnboardingModalOpen(false);
+          if (selectedPrompt) {
+            setCurrentChatId(null);
+            setInitialPrompt(selectedPrompt);
+            setCurrentScreen('chat');
+          }
+        }}
       />
     </div>
   );

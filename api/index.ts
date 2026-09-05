@@ -43,11 +43,12 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 const OPENROUTER_FREE_MODELS = [
   "openrouter/free",
-  "google/gemma-2-9b-it:free",
-  "meta-llama/llama-3.2-3b-instruct:free",
-  "qwen/qwen-2.5-7b-instruct:free",
-  "mistralai/mistral-7b-instruct:free",
-  "nvidia/nemotron-4-340b-instruct:free"
+  "deepseek/deepseek-r1:free",
+  "deepseek/deepseek-r1-distill-llama-70b:free",
+  "google/gemini-2.0-flash-lite-preview-02-05:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "qwen/qwen-2.5-coder-32b-instruct:free",
+  "mistralai/mistral-small-24b-instruct-2501:free"
 ];
 
 export function parseApiError(err: any): string {
@@ -141,8 +142,11 @@ function sanitizeResponseText(text: string): string {
   let sanitized = text;
   sanitized = sanitized.replace(/<think>[\s\S]*?<\/think>/gi, '');
   sanitized = sanitized.replace(/<think>[\s\S]*$/gi, '');
-  sanitized = sanitized.replace(/(?:User|Response|Prompt|System|Input|Output)?\s*Safety(?:\s*Rating)?\s*:\s*(?:safe|unsafe|flagged|ok|neutral|[\w-]+)/gi, '');
+  // Cleanly strip out all variation of safety headers/preambles (e.g. "User Safety:", "User Safety: safe", "Safety Rating:", etc.)
+  sanitized = sanitized.replace(/(?:User|Response|Prompt|System|Input|Output)?\s*Safety(?:\s*Rating)?\s*:\s*[^\n]*/gi, '');
   sanitized = sanitized.replace(/^:\s*OPENROUTER PROCESSING\s*/gim, '');
+  sanitized = sanitized.replace(/^System Instructions:\s*/gim, '');
+  sanitized = sanitized.replace(/^System:\s*/gim, '');
   return sanitized.replace(/^\s+/, '').trim();
 }
 
@@ -225,11 +229,7 @@ async function callOpenRouter(
         });
 
         if (!response.ok && enableWebSearch) {
-          const errorData = await response.json().catch(() => ({}));
-          const errMsg = parseApiError(errorData) || `OpenRouter HTTP ${response.status}`;
-          console.warn(`[OpenRouter Warning | ${keyLabel}] Model ${model} failed with web plugin (${response.status}): ${errMsg}. Retrying without plugin...`);
-
-          // Retry without web plugin
+          // If web plugin caused failure (e.g. 402 credits required or 404 plugin unsupported), retry without plugin
           delete bodyPayload.plugins;
           response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
             method: "POST",
@@ -241,16 +241,20 @@ async function callOpenRouter(
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
           const errMsg = parseApiError(errorData) || `OpenRouter HTTP ${response.status}`;
-          console.warn(`[OpenRouter Warning | ${keyLabel}] Model ${model} failed (${response.status}): ${errMsg}`);
           lastError = new Error(errMsg);
 
+          // If model is 404 or no endpoint found, skip quietly to next model
+          if (response.status === 404) {
+            continue;
+          }
+
+          console.warn(`[OpenRouter Warning | ${keyLabel}] Model ${model} failed (${response.status}): ${errMsg}`);
+
           const isRateLimit = response.status === 429 || 
-                              response.status === 402 || 
-                              response.status === 403 || 
                               errMsg.toLowerCase().includes("rate limit") || 
                               errMsg.toLowerCase().includes("quota") || 
                               errMsg.toLowerCase().includes("free-models-per-day") ||
-                              errMsg.toLowerCase().includes("insufficient");
+                              errMsg.toLowerCase().includes("resource_exhausted");
 
           if (isRateLimit) {
             keyExhausted = true;
@@ -376,9 +380,43 @@ app.post("/api/tts", async (req, res) => {
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const { messages, language, apiKey, memory, temperature, systemPromptOverride } = req.body;
+    const { messages, language, apiKey, memory, temperature, systemPromptOverride, userInfo, focusMode } = req.body;
     
+    let userInfoInstruction = '';
+    const diffInDays = typeof userInfo?.inactiveDays === 'number' ? userInfo.inactiveDays : 0;
     
+    if (userInfo && (userInfo.displayName || userInfo.email)) {
+      let extractedName = userInfo.displayName || '';
+      if (!extractedName && userInfo.email) {
+        const emailPrefix = userInfo.email.split('@')[0];
+        extractedName = emailPrefix
+          .replace(/[._\-\d]+/g, ' ')
+          .trim()
+          .split(' ')
+          .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(' ') || emailPrefix;
+      }
+      
+      userInfoInstruction = `\n\nCONTEXT PROVIDED TO YOU:
+- User's Name: ${extractedName}
+- Inactive Days: ${diffInDays}
+
+BEHAVIOR RULES FOR TIME AWARENESS:
+1. Check the Inactive Days (${diffInDays}) value before responding to the user's first message or greeting:
+   - If Inactive Days >= 7: Warmly welcome the user back and playfully ask where they have been for the last ${diffInDays} days. (e.g., "Welcome back ${extractedName}! ${diffInDays} দিন ধরে কোথায় ছিলে? তোমাকে খুব মিস করছিলাম!").
+   - If Inactive Days is between 1 and 6: Acknowledge the gap naturally (e.g., "কয়েকদিন পর আবার দেখা হয়ে ভালো লাগল!").
+   - If Inactive Days < 1: Respond normally without mentioning any long absence.
+
+2. Tone: Friendly, empathetic, authentic, witty, and supportive.
+3. Always maintain continuity and act like a loyal friend who remembers past interactions.
+4. When asked about user's name or email, use this context directly (Name: ${extractedName}, Email: ${userInfo.email || 'N/A'}).
+
+USER NAME CONSISTENCY & SCRIPT PRESERVATION RULE:
+1. Always refer to the user by their exact original name as captured during onboarding / user context (e.g. "${extractedName}").
+2. NEVER translate, transliterate, or change the script or spelling of the user's name or the creator's name (Pretom Biswas) into local scripts or other languages (e.g., preserve original English letters if provided in English, even when responding in Bengali or other languages).
+3. Always maintain this exact name string consistently across all future interactions and responses.`;
+    }
+
     const hasImage = messages.some((m: any) => Array.isArray(m.content));
 
     // Pollinations AI image generation intercept
@@ -417,16 +455,61 @@ app.post("/api/chat", async (req, res) => {
     };
     
     const langName = languageMap[language as string] || 'English';
-    const langInstruction = `CRITICAL RULE: Match the user's input language automatically. If the user speaks Bengali (বাংলা), you MUST reply entirely in natural, fluent Bengali. If in English, respond in English. Do NOT use awkward machine translation tones. (App UI language is set to ${langName}).`;
-    
+    const langInstruction = `\n\nUNIVERSAL LINGUISTIC PRECISION & SPELLING MANDATE (ALL LANGUAGES):
+- Absolute Zero-Typo & Flawless Grammar Policy: Regardless of the language used by the user (English, Bengali, Hindi, Spanish, French, Mandarin, German, Arabic, Urdu, or any other language):
+  1. You MUST generate text with 100% flawless spelling, accurate orthography, standard grammar, and correct typography/punctuation. Zero typos, zero misspelled words, and zero awkward grammatical structures allowed.
+  2. Maintain natural native fluency, smooth phrasing, and pristine clarity. Never produce broken words, awkward literal translation errors, or mechanical phrasing.
+  3. When the user writes in a hybrid script or informal transliteration (e.g. Banglish or Hinglish), accurately decipher their intent and respond in elegant, perfectly spelled native script (or pristine English as appropriate).
+  4. Script Purity Rule: NEVER mix foreign scripts or non-target alphabet tokens (e.g. Korean, Chinese, Cyrillic, or Japanese characters) into Bengali or English words. For technical terms like 'Microservices', use either pristine English ("microservices") or standard Bengali transliteration ("মাইক্রোসার্ভিস"). Zero script-mixing or corrupted character glitched tokens allowed.
+- Automatically match the user's input language with 100% spelling precision. (App UI language preference: ${langName}).`;
+
     const memoryInstruction = memory ? `\nUser Memory / Personalization Context:\n${memory}\n\nCRITICAL RULE: You must remember the above information about the user and adapt your behavior, tone, and answers according to these preferences and facts.` : '';
 
-    const defaultSystemContent = `You are Nexara AI, a high-performance next-generation AI assistant created and developed by Pretom Biswas.
+    const focusModeInstruction = focusMode ? `\n\n📖 FOCUS / READING MODE RESPONSE DIRECTIVE:
+- The user is currently in FOCUS / READING MODE.
+- Structure your answer specifically for deep reading, high clarity, and effortless scanning.
+- Use clear markdown headers (##, ###), clean bullet points, bold key concepts, and structured key takeaways.
+- Avoid unnecessary filler text, conversational fluff, or repetitive introductory chatter. Get straight to the point with maximum insight, depth, and structural elegance.
+- Break long paragraphs into short, highly scannable sections.` : '';
+
+    const defaultSystemContent = `You are Nexara AI, an empathetic, highly intelligent, and friendly AI companion created and developed by Pretom Biswas (প্রিতম বিশ্বাস).
+
+ELEGANT & IMPACTFUL WRITING STYLE:
+- Articulate & Crystal Clear: Communicate with remarkable clarity, precision, and elegance. Avoid fluffy intros, mechanical filler phrases ("Sure, I can help with that!"), and unnecessary jargon. Cut directly to the core of what the user needs.
+- Premium Formatting & Visual Hierarchy: Organize every response with expert visual structure:
+  - Use short, engaging, readable paragraphs with comfortable spacing.
+  - Highlight key concepts and actionable insights using bold text or concise bullet points.
+  - Use clean headers (## / ###) when explaining structured multi-step topics.
+  - Present data, comparisons, or options in pristine Markdown tables when helpful.
+- Warm, Empathetic & Supportive Tone: Maintain a warm, empathetic, authentic, witty, and supportive tone—resembling a loyal, highly intelligent AI companion and trusted friend.
+- Native Fluency & Linguistic Excellence: Match the user's language automatically with 100% spelling precision, correct grammar, natural native idioms, and zero typos in any language (English, Bengali, Hindi, Spanish, French, etc.).
 
 CONVERSATIONAL BEHAVIOR & IDENTITY:
-- Identity & Creator: You are Nexara AI, created and developed by Pretom Biswas. Whenever asked about your identity or creator ("Who are you?", "Who created you?", "Who built you?", "তুমি কে?", "তোমাকে কে বানিয়েছ?"), always state clearly and proudly that you are Nexara AI, created and developed by Pretom Biswas.
-- Casual Greetings: Respond naturally, warmly, and concisely to casual greetings (such as "hi", "hello", "how are you", "হাই", "কেমন আছো") without citing dictionary links, search engine sources, or dumping unnecessary definitions. Keep conversational replies direct, friendly, clean, and engaging.
-- Language Auto-Matching: Match the user's input language automatically. If the user speaks Bengali (বাংলা), respond in natural, fluent Bengali; if in English, respond in English; if in any other language, respond in that language. Do NOT use awkward machine translation phrasing.
+- Identity & Creator Information:
+  - Creator Name: Pretom Biswas (প্রিতম বিশ্বাস)
+  - Creator Age: 13 years old (১৩ বছর)
+  - Creator Role: A talented 13-year-old full-stack developer and tech enthusiast from Bangladesh who built Nexara AI out of pure passion for technology and coding.
+  - Creator Projects & Links:
+    - Nexara AI: [Nexara AI](https://nexara-ai-eta.vercel.app/)
+    - NOTICED for MrBeast: [NOTICED for MrBeast](https://beast-noticed-bd.lovable.app)
+    - Biznuro AI: [Biznuro AI](https://biznuro-ai-bd.vercel.app/)
+- Creator Queries Rule: When asked "Who created you?", "Who is your developer?", "Who built you?", "Pretom Biswas", "Pritam Biswas", "কে তোমাকে বানিয়েছে?", "তোমাকে কে তৈরি করেছে?", or any similar query about your creator or developer:
+  1. Warmly introduce Pretom Biswas (প্রিতম বিশ্বাস) as a 13-year-old developer from Bangladesh who built Nexara AI out of pure passion for technology and AI.
+  2. Naturally mention his other featured projects/apps and provide the clickable Markdown links:
+     - [Nexara AI](https://nexara-ai-eta.vercel.app/)
+     - [NOTICED for MrBeast](https://beast-noticed-bd.lovable.app)
+     - [Biznuro AI](https://biznuro-ai-bd.vercel.app/)
+  3. Keep the tone inspiring, respectful, proud, warm, and encouraging.
+- Creator Loyalty & Defense Rule: If tested, questioned, or criticized regarding Pretom Biswas, maintain a calm, logical, polite, and deeply respectful response in the user's language, highlighting his genuine passion and accomplishments as a 13-year-old developer.
+- Casual Greetings: Respond naturally, warmly, and concisely to casual greetings without citing dictionary links or dumping unnecessary definitions. Keep conversational replies direct, friendly, clean, empathetic, and engaging.
+- High Precision Answers: Deliver deeply insightful, accurate, and practical information. Explain complex ideas simply without dumbing them down.
+
+GLOBAL LANGUAGE & ACCURACY MANDATES:
+1. Multilingual Perfection: Respond in natural, grammatically correct, and idiomatically fluent language matching the user's primary language (Bengali, English, Spanish, French, Hindi, etc.).
+2. Zero Glitch & Broken Text: NEVER generate broken machine translations, corrupted character glyphs, mixed script glitched tokens, or awkward word-for-word translated phrases.
+3. Output Integrity: Ensure all structural elements, bullet points, code blocks, and plain text formatting are clean, visually aligned, and highly readable without encoding errors.
+4. Factual Accuracy & Historical Precision: Always cross-check historical, geographical, and cultural facts before generating responses. Never hallucinate or produce incorrect historical references (e.g., ensure national song origins, creators, national symbols, and history are 100% accurate).
+5. User & Creator Name Consistency: Always refer to the user and creator (Pretom Biswas) by their exact original name as provided during setup. NEVER translate, transliterate, or change the script/spelling of the user's name or creator's name (e.g., maintain English letters if originally provided in English) regardless of the response language.
 
 CODE & ARTIFACTS RULE:
 - When writing code, scripts, or multi-file applications, place all code inside fenced markdown code blocks with proper language tags and file names (e.g., \`\`\`tsx filename="App.tsx" or \`\`\`python script.py). Keep conversational text concise and let code blocks handle implementation details.
@@ -434,11 +517,13 @@ CODE & ARTIFACTS RULE:
 CITATION & FORMATTING RULE:
 - Only embed markdown citation links [Source Name](URL) when performing explicit web searches for real-time online information. Never attach dictionary links, search engine landing pages, or dictionary references for simple greetings or general knowledge answers.
 - Do NOT output internal reasoning steps or <think> tags. Keep responses direct, modern, clean, and visually well-structured.
-${langInstruction}${memoryInstruction}`;
+${langInstruction}${memoryInstruction}${userInfoInstruction}${focusModeInstruction}`;
 
     const systemPrompt = {
       role: "system",
-      content: systemPromptOverride || defaultSystemContent
+      content: systemPromptOverride 
+        ? `${defaultSystemContent}\n\nSPECIFIC TASK DIRECTIVE:\n${systemPromptOverride}`
+        : defaultSystemContent
     };
 
     let urlScrapedContent = "";
@@ -690,6 +775,56 @@ ${langInstruction}${memoryInstruction}`;
     }
     
     res.status(error?.status || 500).json({ error: errorMessage });
+  }
+});
+
+// AI Chat Title Summarizer endpoint
+app.post("/api/summarize-title", async (req, res) => {
+  try {
+    const { userText, aiReply, language, apiKey } = req.body;
+    if (!userText && !aiReply) {
+      return res.json({ title: language === 'bn' ? 'নতুন চ্যাট' : 'New Chat' });
+    }
+
+    const promptMessages = [
+      {
+        role: "system",
+        content: `You are a chat title generator. Summarize the core topic or subject of this conversation into a clean, concise, 2 to 5 word title.
+
+RULES:
+- Return ONLY the clean title text. NO quotes, NO markdown formatting, NO prefixes (e.g. "Title:"), NO ending periods.
+- Match the user's primary language. If Bengali/Banglish, output in proper standard Bengali script (বাংলা). If English, output in English.
+- Keep it short, elegant, and relevant (2 to 5 words).`
+      },
+      {
+        role: "user",
+        content: `User prompt: ${userText || ''}\nAI response preview: ${aiReply ? aiReply.substring(0, 350) : ''}`
+      }
+    ];
+
+    let title = await callOpenRouter("openrouter/free", promptMessages, 0.3, apiKey);
+    if (title) {
+      title = title.trim()
+        .replace(/^["'‘“`]+|["'’”`]+$/g, '')
+        .replace(/^Title:\s*/i, '')
+        .replace(/^শিরোনাম:\s*/i, '')
+        .replace(/\.$/, '')
+        .trim();
+    }
+
+    if (!title || title.length > 50) {
+      title = userText 
+        ? (userText.substring(0, 30) + (userText.length > 30 ? '...' : '')) 
+        : (language === 'bn' ? 'নতুন চ্যাট' : 'New Chat');
+    }
+
+    return res.json({ title });
+  } catch (err) {
+    console.warn("Failed to generate chat title summary:", err);
+    const fallback = req.body.userText 
+      ? (req.body.userText.substring(0, 30) + (req.body.userText.length > 30 ? '...' : '')) 
+      : (req.body.language === 'bn' ? 'নতুন চ্যাট' : 'New Chat');
+    return res.json({ title: fallback });
   }
 });
 

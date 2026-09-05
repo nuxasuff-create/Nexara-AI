@@ -23,9 +23,10 @@ interface SidebarProps {
   user: FirebaseUser;
   onUpgradeClick?: () => void;
   isAdmin?: boolean;
+  isFocusMode?: boolean;
 }
 
-export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScreen, currentChatId, setCurrentChatId, user, onUpgradeClick, isAdmin }: SidebarProps) {
+export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScreen, currentChatId, setCurrentChatId, user, onUpgradeClick, isAdmin, isFocusMode = false }: SidebarProps) {
   const { t } = useLanguage();
   const [chats, setChats] = useState<Chat[]>([]);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
@@ -155,9 +156,9 @@ export default function Sidebar({ isOpen, onClose, currentScreen, setCurrentScre
 
       {/* Sidebar Content */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 md:w-[280px] bg-[var(--sidebar)]/95 backdrop-blur-3xl border-r border-[var(--glass-border)] transition-transform duration-300 ease-in-out flex flex-col ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 md:w-[280px] bg-[var(--sidebar)]/95 backdrop-blur-3xl border-r border-[var(--glass-border)] transition-all duration-300 ease-in-out flex flex-col ${
           isOpen ? 'translate-x-0 shadow-2xl shadow-black/20' : '-translate-x-full'
-        } md:translate-x-0 md:static`}
+        } ${isFocusMode ? 'md:-translate-x-full md:fixed' : 'md:translate-x-0 md:static'}`}
       >
         <div className="flex-1 flex flex-col overflow-hidden relative">
           {/* Subtle dynamic background gradient inside sidebar */}

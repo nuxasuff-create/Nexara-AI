@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Mic, Bot, User as UserIcon, Volume2, Square, X, Sparkles, FileText, Search, Image as ImageIcon, History, Plus, Copy, Check, Download, ArrowDown } from 'lucide-react';
+import { Send, Mic, Bot, User as UserIcon, Volume2, Square, X, Sparkles, FileText, Search, Image as ImageIcon, History, Plus, Copy, Check, Download, ArrowDown, Edit2, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vs, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, updateDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, updateDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 import { useLanguage } from '../context/LanguageContext';
@@ -83,6 +83,7 @@ interface Message {
   sender: 'user' | 'ai';
   timestamp: Date;
   image?: string;
+  images?: string[];
 }
 
 interface ChatScreenProps {
@@ -91,17 +92,25 @@ interface ChatScreenProps {
   currentChatId: string | null;
   setCurrentChatId: (id: string | null) => void;
   setCurrentScreen: (screen: string) => void;
+  isFocusMode?: boolean;
+  onToggleFocusMode?: () => void;
 }
 
-const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBottom, toggleSpeech, handleCopy, onOpenPreview }: {
+const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBottom, toggleSpeech, handleCopy, onOpenPreview, onEditUserMessage, onRetryAiMessage, language }: {
   msg: Message,
   isCurrentlySpeaking: boolean,
   copiedId: string | null,
   scrollToBottom: () => void,
   toggleSpeech: (text: string, id: string) => void,
   handleCopy: (text: string, id: string) => void,
-  onOpenPreview?: (project: ArtifactProject, fileId?: string) => void
+  onOpenPreview?: (project: ArtifactProject, fileId?: string) => void,
+  onEditUserMessage?: (msgId: string, newText: string) => void,
+  onRetryAiMessage?: (aiMsgId: string) => void,
+  language?: string
 }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(msg.text);
+
   const [isAnimating, setIsAnimating] = useState(() => {
     if (msg.sender === 'ai') {
       if (!msg.timestamp) return true;
@@ -137,12 +146,60 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
     hour12: true
   }).format((msg.timestamp as any)?.toDate ? (msg.timestamp as any).toDate() : new Date(msg.timestamp as any)) : '';
 
+  if (isEditing && msg.sender === 'user') {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex w-full justify-end my-2"
+      >
+        <div className="flex flex-col gap-2 w-full max-w-[85%] bg-[var(--card)] p-4 rounded-[20px] border border-primary/40 shadow-xl backdrop-blur-md">
+          <div className="flex items-center justify-between text-xs font-bold text-primary">
+            <span className="flex items-center gap-1.5">
+              <Edit2 size={13} /> {language === 'bn' ? 'মেসেজ সম্পাদনা করুন' : 'Edit Message'}
+            </span>
+          </div>
+          <textarea
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            rows={3}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 text-sm text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none font-medium leading-relaxed"
+          />
+          <div className="flex justify-end gap-2 mt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setIsEditing(false);
+                setEditText(msg.text);
+              }}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] transition-colors"
+            >
+              {language === 'bn' ? 'বাতিল' : 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (editText.trim() && editText !== msg.text) {
+                  onEditUserMessage?.(msg.id, editText.trim());
+                }
+                setIsEditing(false);
+              }}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-primary text-white hover:opacity-90 transition-opacity flex items-center gap-1.5 shadow-md shadow-primary/20 active:scale-95"
+            >
+              <Check size={13} />
+              {language === 'bn' ? 'সংরক্ষণ ও পাঠান' : 'Save & Submit'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div
-      layout="position"
-      initial={{ opacity: 0, y: 15, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: "spring", stiffness: 400, damping: 25 }}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
       className={`flex w-full ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} group/wrapper`}
     >
       <div className={`flex gap-3 w-full ${msg.sender === 'user' ? 'justify-end max-w-[85%]' : 'max-w-full items-start'}`}>
@@ -159,15 +216,38 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
             className={`relative px-5 py-4 border ${
               msg.sender === 'user'
                 ? 'bg-gradient-to-br from-indigo-500 via-purple-500 to-indigo-600 text-white border-transparent rounded-[24px] rounded-tr-[6px] shadow-[0_8px_24px_rgba(99,102,241,0.25)]'
-                : 'bg-[var(--glass-bg)] backdrop-blur-2xl text-[var(--text)] border-[var(--glass-border)] rounded-[24px] rounded-tl-[6px] shadow-sm'
+                : 'bg-[var(--glass-bg)] backdrop-blur-md text-[var(--text)] border-[var(--glass-border)] rounded-[24px] rounded-tl-[6px] shadow-sm'
             }`}
           >
-            {msg.image && (
-              <div className="mb-4 rounded-[14px] overflow-hidden max-w-sm border border-white/20 shadow-lg relative group-hover:shadow-xl transition-all">
-                <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent pointer-events-none z-10" />
-                <img src={msg.image} alt="Uploaded" className="w-full h-auto object-cover hover:scale-105 transition-transform duration-700" onLoad={scrollToBottom} />
-              </div>
-            )}
+            {/* Images Grid */}
+            {(() => {
+              const imagesToRender = (msg as any).images && (msg as any).images.length > 0 
+                ? (msg as any).images 
+                : (msg.image ? [msg.image] : []);
+
+              if (imagesToRender.length === 0) return null;
+
+              return (
+                <div className={`mb-3 grid gap-2 ${
+                  imagesToRender.length === 1 ? 'grid-cols-1 max-w-sm' : 
+                  imagesToRender.length === 2 ? 'grid-cols-2 max-w-md' : 
+                  'grid-cols-2 sm:grid-cols-3 max-w-lg'
+                }`}>
+                  {imagesToRender.map((imgUrl: string, idx: number) => (
+                    <div key={idx} className="rounded-[14px] overflow-hidden border border-white/20 shadow-md relative group/img transition-all aspect-square bg-black/20">
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none z-10 opacity-0 group-hover/img:opacity-100 transition-opacity" />
+                      <img 
+                        src={imgUrl} 
+                        alt={`Uploaded photo ${idx + 1}`} 
+                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-500 cursor-pointer" 
+                        onLoad={scrollToBottom}
+                        onClick={() => window.open(imgUrl, '_blank')}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {msg.sender === 'user' ? (
               <p className="leading-relaxed whitespace-pre-wrap break-words text-[15px] font-medium">{msg.text}</p>
             ) : (
@@ -195,12 +275,7 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
                       const match = /language-(\w+)/.exec(className || '')
                       const isDark = document.documentElement.className.includes('dark')
                       return !inline && match ? (
-                        <motion.div
-                          initial={{ opacity: 0, y: 6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.25, ease: "easeOut" }}
-                          className="my-3 overflow-hidden rounded-xl shadow-md border border-[var(--border)]"
-                        >
+                        <div className="my-3 overflow-hidden rounded-xl shadow-md border border-[var(--border)]">
                           <SyntaxHighlighter
                             {...props}
                             children={String(children).replace(/\n$/, '')}
@@ -209,7 +284,7 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
                             PreTag="div"
                             customStyle={{ margin: 0, padding: '0.85rem', fontSize: '0.825rem' }}
                           />
-                        </motion.div>
+                        </div>
                       ) : (
                         <code {...props} className={`${className} bg-[var(--text)]/10 text-primary font-mono font-bold px-1.5 py-0.5 rounded-md`}>
                           {children}
@@ -249,25 +324,58 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
             </span>
             
             <div className={`flex items-center gap-1 ${msg.sender === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+               {/* User edit button */}
+               {msg.sender === 'user' && (
+                 <button
+                   type="button"
+                   onClick={() => {
+                     setEditText(msg.text);
+                     setIsEditing(true);
+                   }}
+                   className="p-1.5 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-white hover:bg-white/20"
+                   title={language === 'bn' ? 'মেসেজ সম্পাদনা করুন' : 'Edit message'}
+                 >
+                   <Edit2 size={12} />
+                 </button>
+               )}
+
+               {/* AI Retry button */}
+               {msg.sender === 'ai' && (
+                 <button
+                   type="button"
+                   onClick={() => onRetryAiMessage?.(msg.id)}
+                   className="p-1.5 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] flex items-center gap-1"
+                   title={language === 'bn' ? 'পুনরায় উত্তর দিন' : 'Retry AI response'}
+                 >
+                   <RotateCcw size={12} />
+                 </button>
+               )}
+
                {/* TTS button for all messages */}
                <button
+                 type="button"
                  onClick={() => toggleSpeech(msg.text, msg.id)}
-                 className={`p-1 rounded-[6px] transition-colors ${isCurrentlySpeaking ? 'text-primary bg-primary/10' : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]'}`}
+                 className={`p-1.5 rounded-[6px] transition-colors ${isCurrentlySpeaking ? 'text-primary bg-primary/10' : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]'}`}
                  title={isCurrentlySpeaking ? "Stop reading" : "Read aloud"}
                >
                  {isCurrentlySpeaking ? <Square size={12} className="fill-current" /> : <Volume2 size={12} />}
                </button>
+
+              {/* Copy button */}
               <button
+                type="button"
                 onClick={() => handleCopy(msg.text, msg.id)}
-                className="p-1 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]"
+                className="p-1.5 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]"
                 title="Copy to clipboard"
               >
                 {copiedId === msg.id ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
               </button>
+
               {msg.sender === 'ai' && (
                 <button
+                  type="button"
                   onClick={() => exportAsMarkdown(`nexara_response_${msg.id.substring(0, 6)}`, msg.text)}
-                  className="p-1 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]"
+                  className="p-1.5 rounded-[6px] transition-colors text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]"
                   title="Export message as Markdown"
                 >
                   <Download size={12} />
@@ -282,11 +390,11 @@ const MessageItem = React.memo(({ msg, isCurrentlySpeaking, copiedId, scrollToBo
   );
 });
 
-export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentChatId, setCurrentChatId, setCurrentScreen }: ChatScreenProps) {
+export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentChatId, setCurrentChatId, setCurrentScreen, isFocusMode = false, onToggleFocusMode }: ChatScreenProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [selectedImageName, setSelectedImageName] = useState<string | null>(null);
+  const [selectedImages, setSelectedImages] = useState<string[]>([]);
+  const [selectedImageNames, setSelectedImageNames] = useState<string[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isSpeechSupported, setIsSpeechSupported] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
@@ -299,6 +407,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [userMemory, setUserMemory] = useState<string>('');
+  const [inactiveDays, setInactiveDays] = useState<number>(0);
   const [voiceCommands, setVoiceCommands] = useState<string[]>([]);
   const [showVoiceCommands, setShowVoiceCommands] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -355,7 +464,14 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
         return;
       }
 
-      // Esc => Close active drawers or modals
+      // Cmd/Ctrl + Shift + F => Toggle Focus Mode
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        if (onToggleFocusMode) onToggleFocusMode();
+        return;
+      }
+
+      // Esc => Close active drawers, modals, or exit Focus Mode
       if (e.key === 'Escape') {
         if (drawerState.isOpen) {
           setDrawerState({ isOpen: false, project: null, activeFileId: null });
@@ -363,6 +479,8 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
           setShowSummaryModal(false);
         } else if (showVoiceCommands) {
           setShowVoiceCommands(false);
+        } else if (isFocusMode && onToggleFocusMode) {
+          onToggleFocusMode();
         }
       }
     };
@@ -394,37 +512,54 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     }
   }, []);
 
+  const scrollRafRef = useRef<number | null>(null);
+
   const scrollToBottom = useCallback((force = false) => {
     if (userHasScrolled && !force) return;
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTo({
-        top: scrollContainerRef.current.scrollHeight,
-        behavior: 'smooth'
-      });
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+    });
   }, [userHasScrolled]);
 
   useEffect(() => {
     if (!userHasScrolled) {
       scrollToBottom();
     }
-  }, [messages, isTyping, smoothStreamingText, scrollToBottom, userHasScrolled]);
+  }, [messages.length, isTyping, smoothStreamingText, scrollToBottom, userHasScrolled]);
 
   useEffect(() => {
     if (userId) {
-      const fetchMemory = async () => {
+      const fetchUserDataAndCalculateInactivity = async () => {
         try {
-          const userDoc = await getDoc(doc(db, 'users', userId));
+          const userRef = doc(db, 'users', userId);
+          const userDoc = await getDoc(userRef);
           if (userDoc.exists()) {
-            setUserMemory(userDoc.data().memory || '');
+            const data = userDoc.data();
+            setUserMemory(data.memory || '');
+            
+            if (data.lastActive) {
+              const lastActiveDate = data.lastActive.toDate ? data.lastActive.toDate() : new Date(data.lastActive);
+              const now = new Date();
+              const diffTime = Math.abs(now.getTime() - lastActiveDate.getTime());
+              const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+              setInactiveDays(diffDays);
+            } else {
+              setInactiveDays(0);
+            }
           }
+          
+          // Update lastActive timestamp
+          await setDoc(userRef, { lastActive: serverTimestamp() }, { merge: true });
         } catch (error) {
-          console.error("Error fetching memory:", error);
+          console.error("Error fetching user data/memory:", error);
         }
       };
-      fetchMemory();
+      fetchUserDataAndCalculateInactivity();
     }
   }, [userId]);
 
@@ -825,12 +960,16 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
 
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream'
+        },
         body: JSON.stringify({
           messages: [{ role: 'user', content: prompt }],
           language,
           apiKey: activeApiKey,
-          memory: '' // No memory needed for summary
+          memory: '', // No memory needed for summary
+          stream: false // Non-streaming mode for direct JSON reply
         })
       });
 
@@ -847,13 +986,55 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
       }
 
       const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
+      let summaryResult = "";
+
+      if (contentType && contentType.includes("application/json")) {
+        const data = await response.json();
+        summaryResult = data.reply || "";
+      } else if (contentType && contentType.includes("text/event-stream") && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.chunk) summaryResult += data.chunk;
+              if (data.reply) summaryResult = data.reply;
+            } catch (e) {}
+          }
+        }
+      } else {
         const textResponse = await response.text().catch(() => "");
-        console.error("Non-JSON Success Response:", textResponse);
-        throw new Error("Received non-JSON response from API");
+        if (textResponse.includes("data: ")) {
+          const lines = textResponse.split("\n");
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const parsed = JSON.parse(trimmed.slice(6));
+                if (parsed.reply) summaryResult = parsed.reply;
+                else if (parsed.chunk) summaryResult += parsed.chunk;
+              } catch (e) {}
+            }
+          }
+        } else {
+          summaryResult = textResponse;
+        }
       }
-      const data = await response.json();
-      setSummaryText(data.reply);
+
+      if (!summaryResult.trim()) {
+        throw new Error("No summary text was generated.");
+      }
+
+      setSummaryText(summaryResult);
       setShowSummaryModal(true);
     } catch (error: any) {
       console.error("Error summarizing chat:", error);
@@ -864,68 +1045,159 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     }
   };
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+    setSelectedImageNames(prev => prev.filter((_, i) => i !== index));
+  };
 
-    if (!file.type.match(/image\/(jpeg|jpg|png|webp)/)) {
-      alert(language === 'bn' ? 'সাপোর্টেড ফরম্যাট: JPG, PNG, WEBP.' : 'Unsupported image format. Please upload JPG, PNG, or WEBP.');
+  const clearAllImages = () => {
+    setSelectedImages([]);
+    setSelectedImageNames([]);
+  };
+
+  const processImageFiles = (files: File[]) => {
+    const validFiles = files.filter(file => file.type.match(/image\/(jpeg|jpg|png|webp|gif)/));
+    if (validFiles.length === 0) {
+      alert(language === 'bn' ? 'সাপোর্টেড ফরম্যাট: JPG, PNG, WEBP, GIF ছবি যোগ করুন।' : 'Unsupported image format. Please upload JPG, PNG, WEBP, or GIF.');
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      alert(language === 'bn' ? 'ছবির সাইজ ১০ এমবি এর বেশি হতে পারবে না।' : 'The image is too large. Maximum file size is 10 MB.');
+
+    const currentCount = selectedImages.length;
+    const remainingSlots = 5 - currentCount;
+
+    if (remainingSlots <= 0) {
+      alert(language === 'bn' ? 'একবারে সর্বোচ্চ ৫টি ছবি যুক্ত করা সম্ভব।' : 'Maximum 5 images allowed at a time.');
       return;
     }
-    setSelectedImageName(file.name);
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result) {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          // Max dimensions
-          const MAX_WIDTH = 800;
-          const MAX_HEIGHT = 800;
-          
-          if (width > height) {
-            if (width > MAX_WIDTH) {
-              height *= MAX_WIDTH / width;
-              width = MAX_WIDTH;
-            }
-          } else {
-            if (height > MAX_HEIGHT) {
-              width *= MAX_HEIGHT / height;
-              height = MAX_HEIGHT;
-            }
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          
-          // Compress to JPEG with 0.7 quality
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          setSelectedImage(compressedDataUrl);
-        };
-        img.src = event.target.result as string;
+    if (validFiles.length > remainingSlots) {
+      alert(language === 'bn' ? `সর্বোচ্চ ৫টি ছবির সীমা। প্রথম ${remainingSlots}টি ছবি যুক্ত করা হচ্ছে।` : `Limit is 5 images. Adding the first ${remainingSlots} image(s).`);
+    }
+
+    const filesToProcess = validFiles.slice(0, remainingSlots);
+
+    filesToProcess.forEach(file => {
+      if (file.size > 10 * 1024 * 1024) {
+        alert(language === 'bn' ? `${file.name} এর সাইজ ১০ এমবি এর বেশি।` : `${file.name} is too large (>10MB).`);
+        return;
       }
-    };
-    reader.readAsDataURL(file);
-    
-    // Reset input so the same file can be selected again if needed
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            
+            const MAX_WIDTH = 800;
+            const MAX_HEIGHT = 800;
+            
+            if (width > height) {
+              if (width > MAX_WIDTH) {
+                height *= MAX_WIDTH / width;
+                width = MAX_WIDTH;
+              }
+            } else {
+              if (height > MAX_HEIGHT) {
+                width *= MAX_HEIGHT / height;
+                height = MAX_HEIGHT;
+              }
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx?.drawImage(img, 0, 0, width, height);
+            
+            const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+            
+            setSelectedImages(prev => {
+              if (prev.length >= 5) return prev;
+              return [...prev, compressedDataUrl];
+            });
+            setSelectedImageNames(prev => [...prev, file.name || 'image.jpg']);
+          };
+          img.src = event.target.result as string;
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    processImageFiles(Array.from(files));
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+      setIsDraggingOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        processImageFiles(imageFiles);
+      } else {
+        alert(language === 'bn' ? 'সাপোর্টেড ফরম্যাট: JPG, PNG, WEBP, GIF ছবি ড্রপ করুন।' : 'Please drop supported image files (JPG, PNG, WEBP, GIF).');
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const pastedImageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.indexOf('image') !== -1) {
+          const file = item.getAsFile();
+          if (file) {
+            pastedImageFiles.push(file);
+          }
+        }
+      }
+
+      if (pastedImageFiles.length > 0) {
+        e.preventDefault();
+        processImageFiles(pastedImageFiles);
+      }
+    };
+
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => {
+      window.removeEventListener('paste', handleGlobalPaste);
+    };
+  }, [language, selectedImages.length]);
+
   const handleSend = async (textOverride?: string, systemPromptOverride?: string, temperature?: number) => {
     const text = textOverride || input;
-    if (!text.trim() && !selectedImage) return;
+    if (!text.trim() && selectedImages.length === 0) return;
     if (!userId) return;
 
     let usedVoice = false;
@@ -935,13 +1207,12 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
       usedVoice = true;
     }
 
-    const currentImage = selectedImage;
+    const currentImages = [...selectedImages];
     setInput('');
     if (inputRef.current) {
         inputRef.current.style.height = 'auto';
     }
-    setSelectedImage(null);
-    setSelectedImageName(null);
+    clearAllImages();
     baseInputRef.current = '';
     setIsTyping(true);
     const initialStatusText = language === 'bn' ? 'নেক্সারা এআই ভাবছে...' : 'Nexara AI is thinking...';
@@ -954,11 +1225,15 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     startBackgroundGeneration(initialStatusText);
 
     let chatId = currentChatId;
+    const isNewChat = !chatId;
+    const isFirstExchange = messages.length === 0;
+
     try {
       if (!chatId) {
-        // Create new chat
+        // Create new chat with fallback title
+        const fallbackTitle = text ? (text.length > 30 ? text.substring(0, 30) + '...' : text) : (language === 'bn' ? 'নতুন চ্যাট' : 'New Chat');
         const chatRef = await addDoc(collection(db, `users/${userId}/chats`), {
-          title: text ? text.substring(0, 30) + (text.length > 30 ? '...' : '') : 'Image Chat',
+          title: fallbackTitle,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
@@ -979,20 +1254,26 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
         sender: 'user',
         timestamp: serverTimestamp()
       };
-      if (currentImage) {
-        userMessageData.image = currentImage;
+      if (currentImages.length > 0) {
+        userMessageData.images = currentImages;
+        userMessageData.image = currentImages[0];
       }
       await addDoc(collection(db, path), userMessageData);
 
-      // Prepare messages for Groq
+      // Prepare messages for AI
       const groqMessages = messages.map(m => {
-        if (m.image && m.sender === 'user') {
+        const mImages = (m as any).images && (m as any).images.length > 0 
+          ? (m as any).images 
+          : (m.image ? [m.image] : []);
+
+        if (mImages.length > 0 && m.sender === 'user') {
+          const contentArray: any[] = [{ type: 'text', text: m.text || ' ' }];
+          mImages.forEach((img: string) => {
+            contentArray.push({ type: 'image_url', image_url: { url: img } });
+          });
           return {
             role: 'user',
-            content: [
-              { type: 'text', text: m.text || ' ' },
-              { type: 'image_url', image_url: { url: m.image } }
-            ]
+            content: contentArray
           };
         }
         return {
@@ -1001,13 +1282,14 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
         };
       });
       
-      if (currentImage) {
+      if (currentImages.length > 0) {
+        const contentArray: any[] = [{ type: 'text', text: text || ' ' }];
+        currentImages.forEach((img: string) => {
+          contentArray.push({ type: 'image_url', image_url: { url: img } });
+        });
         groqMessages.push({
           role: 'user',
-          content: [
-            { type: 'text', text: text || ' ' },
-            { type: 'image_url', image_url: { url: currentImage } }
-          ]
+          content: contentArray
         });
       } else {
         groqMessages.push({ role: 'user', content: text });
@@ -1040,6 +1322,13 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
           language, 
           apiKey: activeApiKey, 
           memory: userMemory,
+          userInfo: {
+            email: auth.currentUser?.email || '',
+            displayName: auth.currentUser?.displayName || '',
+            photoURL: auth.currentUser?.photoURL || '',
+            inactiveDays: inactiveDays
+          },
+          focusMode: isFocusMode,
           systemPromptOverride,
           temperature,
           stream: true
@@ -1162,6 +1451,30 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
       
       scrollToBottom();
 
+      // Auto-summarize conversation main topic into a concise title for chat history
+      if (isNewChat || isFirstExchange || messages.length <= 1) {
+        const targetChatId = chatId;
+        fetch('/api/summarize-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userText: text,
+            aiReply: replyText,
+            language,
+            apiKey: activeApiKey
+          })
+        })
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && d.title && d.title.trim() && targetChatId && userId) {
+              updateDoc(doc(db, `users/${userId}/chats`, targetChatId), {
+                title: d.title.trim()
+              }).catch((e) => console.warn('Failed updating chat title summary:', e));
+            }
+          })
+          .catch((err) => console.warn('Error summarizing chat title:', err));
+      }
+
       } catch (error: any) {
       setIsTyping(false);
       setStatusMessage('');
@@ -1193,6 +1506,286 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
     }
   };
 
+  const handleRetryAiMessage = async (aiMsgId: string) => {
+    if (!currentChatId || !userId || isTyping) return;
+
+    const aiIndex = messages.findIndex(m => m.id === aiMsgId);
+    if (aiIndex === -1) return;
+
+    setIsTyping(true);
+    const initialStatusText = language === 'bn' ? 'নেক্সারা এআই পুনরায় চিন্তা করছে...' : 'Nexara AI is regenerating...';
+    setStatusMessage(initialStatusText);
+    setStatusTool('thinking');
+    setStreamingText('');
+
+    try {
+      const historySlice = messages.slice(0, aiIndex);
+      const groqMessages = historySlice.map(m => {
+        const mImages = (m as any).images && (m as any).images.length > 0 
+          ? (m as any).images 
+          : (m.image ? [m.image] : []);
+
+        if (mImages.length > 0 && m.sender === 'user') {
+          const contentArray: any[] = [{ type: 'text', text: m.text || ' ' }];
+          mImages.forEach((img: string) => {
+            contentArray.push({ type: 'image_url', image_url: { url: img } });
+          });
+          return { role: 'user', content: contentArray };
+        }
+        return {
+          role: m.sender === 'user' ? 'user' : 'assistant',
+          content: m.text
+        };
+      });
+
+      let activeApiKey = '';
+      try {
+        const apikeysRef = doc(db, 'settings', 'apikeys');
+        const apikeysSnap = await getDoc(apikeysRef);
+        if (apikeysSnap.exists()) {
+          const keys = apikeysSnap.data().keys || [];
+          if (keys.length > 0) activeApiKey = keys[0];
+        }
+      } catch (e) {}
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream, application/json'
+        },
+        body: JSON.stringify({ 
+          messages: groqMessages, 
+          language, 
+          apiKey: activeApiKey, 
+          memory: userMemory,
+          userInfo: {
+            email: auth.currentUser?.email || '',
+            displayName: auth.currentUser?.displayName || '',
+            photoURL: auth.currentUser?.photoURL || '',
+            inactiveDays: inactiveDays
+          },
+          stream: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch AI response (Status: ${response.status})`);
+      }
+
+      const contentType = response.headers.get("content-type");
+      let replyText = "";
+
+      if (contentType && contentType.includes("text/event-stream") && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.status) {
+                setStatusMessage(data.status);
+                if (data.tool) setStatusTool(data.tool);
+              }
+              if (data.chunk) {
+                replyText += data.chunk;
+                setStreamingText(replyText);
+              }
+              if (data.reply) {
+                replyText = data.reply;
+                setStreamingText(replyText);
+              }
+            } catch (e) {}
+          }
+        }
+      } else if (contentType && contentType.includes("application/json")) {
+        const data = await response.json();
+        replyText = data.reply || "Sorry, I couldn't generate a response.";
+      }
+
+      if (!replyText.trim()) {
+        replyText = "Sorry, I couldn't generate a response.";
+      }
+
+      const msgDocRef = doc(db, `users/${userId}/chats/${currentChatId}/messages`, aiMsgId);
+      await updateDoc(msgDocRef, {
+        text: replyText,
+        timestamp: serverTimestamp()
+      });
+
+      setIsTyping(false);
+      setStatusMessage('');
+      setStatusTool('');
+      setStreamingText('');
+      scrollToBottom();
+    } catch (error: any) {
+      setIsTyping(false);
+      setStatusMessage('');
+      setStatusTool('');
+      setStreamingText('');
+      console.error("Error retrying AI response:", error);
+    }
+  };
+
+  const handleEditUserMessage = async (userMsgId: string, newText: string) => {
+    if (!currentChatId || !userId || isTyping) return;
+
+    const userIndex = messages.findIndex(m => m.id === userMsgId);
+    if (userIndex === -1) return;
+
+    try {
+      const userDocRef = doc(db, `users/${userId}/chats/${currentChatId}/messages`, userMsgId);
+      await updateDoc(userDocRef, {
+        text: newText,
+        timestamp: serverTimestamp()
+      });
+
+      const updatedMessages = [...messages];
+      updatedMessages[userIndex] = { ...updatedMessages[userIndex], text: newText };
+      const historySlice = updatedMessages.slice(0, userIndex + 1);
+
+      setIsTyping(true);
+      const initialStatusText = language === 'bn' ? 'নেক্সারা এআই চিন্তা করছে...' : 'Nexara AI is thinking...';
+      setStatusMessage(initialStatusText);
+      setStatusTool('thinking');
+      setStreamingText('');
+
+      const groqMessages = historySlice.map(m => {
+        const mImages = (m as any).images && (m as any).images.length > 0 
+          ? (m as any).images 
+          : (m.image ? [m.image] : []);
+
+        if (mImages.length > 0 && m.sender === 'user') {
+          const contentArray: any[] = [{ type: 'text', text: m.text || ' ' }];
+          mImages.forEach((img: string) => {
+            contentArray.push({ type: 'image_url', image_url: { url: img } });
+          });
+          return { role: 'user', content: contentArray };
+        }
+        return {
+          role: m.sender === 'user' ? 'user' : 'assistant',
+          content: m.text
+        };
+      });
+
+      let activeApiKey = '';
+      try {
+        const apikeysRef = doc(db, 'settings', 'apikeys');
+        const apikeysSnap = await getDoc(apikeysRef);
+        if (apikeysSnap.exists()) {
+          const keys = apikeysSnap.data().keys || [];
+          if (keys.length > 0) activeApiKey = keys[0];
+        }
+      } catch (e) {}
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream, application/json'
+        },
+        body: JSON.stringify({ 
+          messages: groqMessages, 
+          language, 
+          apiKey: activeApiKey, 
+          memory: userMemory,
+          userInfo: {
+            email: auth.currentUser?.email || '',
+            displayName: auth.currentUser?.displayName || '',
+            photoURL: auth.currentUser?.photoURL || '',
+            inactiveDays: inactiveDays
+          },
+          stream: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch AI response (Status: ${response.status})`);
+      }
+
+      const contentType = response.headers.get("content-type");
+      let replyText = "";
+
+      if (contentType && contentType.includes("text/event-stream") && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.status) {
+                setStatusMessage(data.status);
+                if (data.tool) setStatusTool(data.tool);
+              }
+              if (data.chunk) {
+                replyText += data.chunk;
+                setStreamingText(replyText);
+              }
+              if (data.reply) {
+                replyText = data.reply;
+                setStreamingText(replyText);
+              }
+            } catch (e) {}
+          }
+        }
+      } else if (contentType && contentType.includes("application/json")) {
+        const data = await response.json();
+        replyText = data.reply || "Sorry, I couldn't generate a response.";
+      }
+
+      if (!replyText.trim()) {
+        replyText = "Sorry, I couldn't generate a response.";
+      }
+
+      const path = `users/${userId}/chats/${currentChatId}/messages`;
+      const nextMsg = messages[userIndex + 1];
+      if (nextMsg && nextMsg.sender === 'ai') {
+        await updateDoc(doc(db, path, nextMsg.id), {
+          text: replyText,
+          timestamp: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, path), {
+          text: replyText,
+          sender: 'ai',
+          timestamp: serverTimestamp()
+        });
+      }
+
+      setIsTyping(false);
+      setStatusMessage('');
+      setStatusTool('');
+      setStreamingText('');
+      scrollToBottom();
+    } catch (error: any) {
+      setIsTyping(false);
+      setStatusMessage('');
+      setStatusTool('');
+      setStreamingText('');
+      console.error("Error editing user message:", error);
+    }
+  };
+
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
@@ -1202,7 +1795,34 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
   );
 
   return (
-    <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
+    <div 
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="flex flex-col h-full bg-transparent relative overflow-hidden"
+    >
+      {/* Drag & Drop Overlay */}
+      <AnimatePresence>
+        {isDraggingOver && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-6 m-3 rounded-3xl border-2 border-dashed border-primary shadow-2xl pointer-events-none"
+          >
+            <div className="w-20 h-20 rounded-2xl bg-primary/20 border border-primary/40 flex items-center justify-center text-primary mb-4 animate-bounce shadow-lg shadow-primary/20">
+              <ImageIcon size={40} />
+            </div>
+            <h3 className="text-xl font-bold text-white text-center">
+              {language === 'bn' ? 'ছবিটি এখানে ছেড়ে দিন (Drop)' : 'Drop photo here to attach'}
+            </h3>
+            <p className="text-xs text-primary-200 text-center mt-1 font-medium">
+              {language === 'bn' ? 'স্বয়ংক্রিয়ভাবে চ্যাটে ফটো যুক্ত হয়ে যাবে' : 'Your image will be attached to the message automatically'}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Chat Area */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 md:p-6 md:px-8">
         {messages.length === 0 && !isTyping ? (
@@ -1295,38 +1915,40 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
           </div>
         ) : (
           <div className="max-w-3xl mx-auto space-y-8">
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-8">
-              <div className="relative w-full sm:w-auto flex-1 max-w-md">
-                <div className="absolute inset-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Search size={16} className="text-[var(--text-muted)]" />
+            {!isFocusMode && (
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-8">
+                <div className="relative w-full sm:w-auto flex-1 max-w-md">
+                  <div className="absolute inset-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Search size={16} className="text-[var(--text-muted)]" />
+                  </div>
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={language === 'bn' ? 'মেসেজ খুঁজুন...' : 'Search messages...'}
+                    className="w-full pl-11 pr-12 py-2.5 bg-[var(--glass-bg)] backdrop-blur-md border border-[var(--glass-border)] rounded-[14px] text-sm font-medium text-[var(--text)] focus:outline-none focus:ring-4 focus:ring-primary/10 hover:border-[var(--text-muted)]/30 transition-all shadow-inner"
+                  />
+                  <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                    <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-[var(--text-muted)] bg-[var(--card)] border border-[var(--glass-border)] rounded-md shadow-sm">
+                      ⌘/
+                    </kbd>
+                  </div>
                 </div>
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={language === 'bn' ? 'মেসেজ খুঁজুন...' : 'Search messages...'}
-                  className="w-full pl-11 pr-12 py-2.5 bg-[var(--glass-bg)] backdrop-blur-md border border-[var(--glass-border)] rounded-[14px] text-sm font-medium text-[var(--text)] focus:outline-none focus:ring-4 focus:ring-primary/10 hover:border-[var(--text-muted)]/30 transition-all shadow-inner"
-                />
-                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                  <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-[var(--text-muted)] bg-[var(--card)] border border-[var(--glass-border)] rounded-md shadow-sm">
-                    ⌘/
-                  </kbd>
-                </div>
+                <button
+                  onClick={handleSummarizeChat}
+                  disabled={isSummarizing}
+                  className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[var(--card)]/80 backdrop-blur-md border border-[var(--border)] rounded-[14px] text-sm font-semibold text-[var(--text)] hover:bg-primary hover:text-white hover:border-primary hover:shadow-lg hover:shadow-primary/20 transition-all duration-300 disabled:opacity-50 whitespace-nowrap w-full sm:w-auto active:scale-[0.97]"
+                >
+                  {isSummarizing ? (
+                    <Sparkles size={16} className="animate-pulse" />
+                  ) : (
+                    <FileText size={16} className="opacity-70 group-hover:opacity-100" />
+                  )}
+                  {isSummarizing ? (language === 'bn' ? 'সারসংক্ষেপ তৈরি হচ্ছে...' : 'Summarizing...') : (language === 'bn' ? 'চ্যাটের সারসংক্ষেপ' : 'Summarize Chat')}
+                </button>
               </div>
-              <button
-                onClick={handleSummarizeChat}
-                disabled={isSummarizing}
-                className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[var(--card)]/80 backdrop-blur-md border border-[var(--border)] rounded-[14px] text-sm font-semibold text-[var(--text)] hover:bg-primary hover:text-white hover:border-primary hover:shadow-lg hover:shadow-primary/20 transition-all duration-300 disabled:opacity-50 whitespace-nowrap w-full sm:w-auto active:scale-[0.97]"
-              >
-                {isSummarizing ? (
-                  <Sparkles size={16} className="animate-pulse" />
-                ) : (
-                  <FileText size={16} className="opacity-70 group-hover:opacity-100" />
-                )}
-                {isSummarizing ? (language === 'bn' ? 'সারসংক্ষেপ তৈরি হচ্ছে...' : 'Summarizing...') : (language === 'bn' ? 'চ্যাটের সারসংক্ষেপ' : 'Summarize Chat')}
-              </button>
-            </div>
+            )}
             
             {filteredMessages.length === 0 && searchQuery ? (
               <div className="text-center text-[var(--text-muted)] py-10 font-medium bg-[var(--card)]/50 rounded-2xl border border-[var(--border)] mt-8">
@@ -1343,6 +1965,9 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
                   toggleSpeech={toggleSpeech} 
                   handleCopy={handleCopy} 
                   onOpenPreview={handleOpenPreview}
+                  onEditUserMessage={handleEditUserMessage}
+                  onRetryAiMessage={handleRetryAiMessage}
+                  language={language}
                 />
               ))
             )}
@@ -1384,12 +2009,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
                             const match = /language-(\w+)/.exec(className || '');
                             const isDark = document.documentElement.className.includes('dark');
                             return !inline && match ? (
-                              <motion.div
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ duration: 0.25 }}
-                                className="my-3 overflow-hidden rounded-xl shadow-md border border-[var(--border)]"
-                              >
+                              <div className="my-3 overflow-hidden rounded-xl shadow-md border border-[var(--border)]">
                                 <SyntaxHighlighter
                                   style={isDark ? vscDarkPlus : (vs as any)}
                                   language={match[1]}
@@ -1399,7 +2019,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
                                 >
                                   {String(children).replace(/\n$/, '')}
                                 </SyntaxHighlighter>
-                              </motion.div>
+                              </div>
                             ) : (
                               <code className="bg-indigo-500/10 text-primary font-mono font-semibold px-1.5 py-0.5 rounded text-xs" {...props}>
                                 {children}
@@ -1458,41 +2078,73 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
           <div className="absolute inset-0 rounded-[2rem] border border-white/20 dark:border-white/5 pointer-events-none" />
           <div className="absolute inset-0 rounded-[2rem] bg-gradient-to-r from-indigo-500/5 via-purple-500/5 to-pink-500/5 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
           
-          {/* Image Preview */}
-          {selectedImage && (
+          {/* Image Previews (Up to 5 Images) */}
+          {selectedImages.length > 0 && (
             <div className="flex flex-col p-3 border-b border-[var(--border)]">
+              <div className="flex items-center justify-between mb-2 px-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                    📷 {selectedImages.length}/5 {language === 'bn' ? 'ছবি যুক্ত' : 'Attached'}
+                  </span>
+                  <span className="text-xs text-[var(--text-muted)] font-medium hidden sm:inline">
+                    {language === 'bn' ? '(একবারে ৫টি পর্যন্ত)' : '(Max 5 at once)'}
+                  </span>
+                </div>
                 <div className="flex items-center gap-3">
-                    <div className="relative w-16 h-16 rounded-[12px] overflow-hidden border border-[var(--border)] shadow-md flex-shrink-0">
-                      <img src={selectedImage} alt="Selected" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="flex flex-col flex-1 min-w-0">
-                        <span className="text-sm font-medium text-[var(--text)] truncate">{selectedImageName || 'image.jpg'}</span>
-                        <div className="flex gap-3 mt-1.5">
-                            <button onClick={() => fileInputRef.current?.click()} className="text-xs font-semibold text-primary hover:underline">Replace</button>
-                            <button onClick={() => { setSelectedImage(null); setSelectedImageName(null); }} className="text-xs font-semibold text-red-500 hover:underline">Remove</button>
-                        </div>
-                    </div>
+                  {selectedImages.length < 5 && (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs font-semibold text-primary hover:underline flex items-center gap-1"
+                    >
+                      <Plus size={14} />
+                      {language === 'bn' ? 'আরও যোগ করুন' : 'Add More'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={clearAllImages}
+                    className="text-xs font-semibold text-red-500 hover:underline"
+                  >
+                    {language === 'bn' ? 'সব মুছুন' : 'Remove All'}
+                  </button>
                 </div>
-                <div className="flex gap-2 mt-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
-                    {[
-                        { icon: '🔍', text: language === 'bn' ? 'বিশ্লেষণ করুন' : 'Analyze Image', prompt: language === 'bn' ? 'এই ছবিটা বিশ্লেষণ করুন এবং বিস্তারিত বলুন।' : 'Analyze this image in detail and tell me what you see.' },
-                        { icon: '📝', text: language === 'bn' ? 'টেক্সট এক্সট্রাক্ট' : 'Extract Text', prompt: language === 'bn' ? 'এই ছবি থেকে সমস্ত টেক্সট এক্সট্রাক্ট করুন।' : 'Extract all the readable text from this image.' },
-                        { icon: '📄', text: language === 'bn' ? 'ডকুমেন্ট পড়ুন' : 'Read Document', prompt: language === 'bn' ? 'এই ডকুমেন্টের কন্টেন্ট পড়ুন এবং সারসংক্ষেপ করুন।' : 'Read and summarize the content of this document.' },
-                        { icon: '🖼️', text: language === 'bn' ? 'বর্ণনা করুন' : 'Describe Image', prompt: language === 'bn' ? 'এই ছবির একটি বিস্তারিত বর্ণনা দিন।' : 'Provide a detailed, vivid description of this image.' },
-                        { icon: '🔎', text: language === 'bn' ? 'অবজেক্ট খুঁজুন' : 'Identify Objects', prompt: language === 'bn' ? 'এই ছবির মূল অবজেক্ট বা বিষয়গুলো চিহ্নিত করুন।' : 'Identify and list the main objects or subjects in this image.' },
-                        { icon: '📊', text: language === 'bn' ? 'চার্ট বিশ্লেষণ' : 'Analyze Chart', prompt: language === 'bn' ? 'এই চার্ট বা গ্রাফটি বিশ্লেষণ করে মূল তথ্যগুলো বুঝিয়ে বলুন।' : 'Analyze this chart or graph and explain the key data points.' },
-                        { icon: '💻', text: language === 'bn' ? 'স্ক্রিনশট বিশ্লেষণ' : 'Analyze Screenshot', prompt: language === 'bn' ? 'এই স্ক্রিনশটটি বিশ্লেষণ করুন এবং এর ইন্টারফেস সম্পর্কে বলুন।' : 'Analyze this screenshot and explain the interface or content shown.' },
-                    ].map((action, i) => (
-                        <button
-                            key={i}
-                            onClick={() => handleSend(action.prompt)}
-                            className="whitespace-nowrap flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--glass-bg)] text-xs font-medium text-[var(--text)] border border-[var(--glass-border)] shadow-sm hover:bg-[var(--hover)] hover:scale-[1.02] active:scale-95 transition-all"
-                        >
-                            <span>{action.icon}</span>
-                            <span>{action.text}</span>
-                        </button>
-                    ))}
-                </div>
+              </div>
+
+              {/* Thumbnails list */}
+              <div className="flex gap-2.5 overflow-x-auto pb-1.5 pt-1" style={{ scrollbarWidth: 'none' }}>
+                {selectedImages.map((imgSrc, idx) => (
+                  <div key={idx} className="relative group shrink-0 w-16 h-16 rounded-[12px] overflow-hidden border border-[var(--border)] shadow-md bg-black/20">
+                    <img src={imgSrc} alt={selectedImageNames[idx] || `Photo ${idx + 1}`} className="w-full h-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(idx)}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 hover:bg-red-600 text-white flex items-center justify-center transition-colors shadow-sm"
+                      title={language === 'bn' ? 'মুছুন' : 'Remove'}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Quick Action Chips */}
+              <div className="flex gap-2 mt-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+                {[
+                  { icon: '🔍', text: language === 'bn' ? 'সবগুলো ছবি বিশ্লেষণ করুন' : 'Analyze Images', prompt: language === 'bn' ? 'এই ছবিগুলো বিশ্লেষণ করে মূল বিষয়গুলো বিস্তারিত বলুন।' : 'Analyze these images in detail and summarize key observations.' },
+                  { icon: '📝', text: language === 'bn' ? 'টেক্সট এক্সট্রাক্ট' : 'Extract Text', prompt: language === 'bn' ? 'এই ছবিগুলো থেকে লেখাগুলো (Text) এক্সট্রাক্ট করুন।' : 'Extract all readable text from these images.' },
+                  { icon: '🖼️', text: language === 'bn' ? 'পার্থক্য বের করুন' : 'Compare / Describe', prompt: language === 'bn' ? 'এই ছবিগুলোর মধ্যে কোনো পার্থক্য বা বিশেষত্ব থাকলে তা বুঝিয়ে বলুন।' : 'Compare these images and highlight key points or differences.' },
+                ].map((action, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleSend(action.prompt)}
+                    className="whitespace-nowrap flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--glass-bg)] text-xs font-medium text-[var(--text)] border border-[var(--glass-border)] shadow-sm hover:bg-[var(--hover)] hover:scale-[1.02] active:scale-95 transition-all"
+                  >
+                    <span>{action.icon}</span>
+                    <span>{action.text}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1500,6 +2152,7 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
             <input
               type="file"
               accept="image/*"
+              multiple
               className="hidden"
               ref={fileInputRef}
               onChange={handleImageSelect}
@@ -1677,14 +2330,14 @@ export default function ChatScreen({ initialPrompt, clearInitialPrompt, currentC
 
             <button
               onClick={() => handleSend()}
-              disabled={(!input.trim() && !selectedImage) || isTyping}
+              disabled={(!input.trim() && selectedImages.length === 0) || isTyping}
               className={`p-2.5 mr-1.5 rounded-[12px] flex items-center justify-center transition-all z-10 ${
-                (!input.trim() && !selectedImage) || isTyping
+                (!input.trim() && selectedImages.length === 0) || isTyping
                   ? 'bg-[var(--hover)] text-[var(--text-muted)]'
                   : 'bg-primary text-white hover:shadow-lg hover:shadow-primary/30 hover:scale-105 active:scale-95'
               }`}
             >
-              <Send size={18} className={(!input.trim() && !selectedImage) || isTyping ? '' : 'translate-x-[1px] translate-y-[-1px]'} strokeWidth={2.5} />
+              <Send size={18} className={(!input.trim() && selectedImages.length === 0) || isTyping ? '' : 'translate-x-[1px] translate-y-[-1px]'} strokeWidth={2.5} />
             </button>
           </div>
         </div>
